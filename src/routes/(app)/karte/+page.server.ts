@@ -9,7 +9,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const ownerId = locals.user!.id;
 
 	const [persons, events, connections, types] = await Promise.all([
-		db.person.findMany({ where: { ownerId }, include: { location: true } }),
+		db.person.findMany({ where: { ownerId }, include: { location: true, aliases: { select: { alias: true } } } }),
 		db.event.findMany({ where: { ownerId }, include: { location: true, eventType: true } }),
 		db.connection.findMany({
 			where: { ownerId },
@@ -34,6 +34,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.map(({ p, c }) => ({
 			id: p.id,
 			name: p.name,
+			aliases: p.aliases.map((entry) => entry.alias),
 			city: p.location!.city,
 			lat: c[0],
 			lng: c[1],

@@ -52,7 +52,7 @@ describe('POST /api/narrate', () => {
 	});
 
 	it('mit messages → delegiert an runNarration', async () => {
-		vi.mocked(runNarration).mockResolvedValue({ reply: 'ok', messages: [], wrote: false });
+		vi.mocked(runNarration).mockResolvedValue({ reply: 'ok', messages: [], wrote: false, personIds: [] });
 		const msgs = [{ role: 'user', content: 'Hallo' }];
 		const req = new Request('http://localhost/', {
 			method: 'POST',
@@ -66,11 +66,11 @@ describe('POST /api/narrate', () => {
 			msgs,
 			{ apiKey: undefined, model: undefined, autoApprove: false, pragmaticMode: false }
 		);
-		expect(data).toEqual({ reply: 'ok', messages: [], wrote: false });
+		expect(data).toEqual({ reply: 'ok', messages: [], wrote: false, personIds: [] });
 	});
 
 	it('bereinigt interne Client-Historie vor runNarration', async () => {
-		vi.mocked(runNarration).mockResolvedValue({ reply: 'ok', messages: [], wrote: false });
+		vi.mocked(runNarration).mockResolvedValue({ reply: 'ok', messages: [], wrote: false, personIds: [] });
 		const req = new Request('http://localhost/', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },

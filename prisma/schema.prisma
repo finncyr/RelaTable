@@ -76,12 +76,55 @@ model Person {
 
   socialAccounts SocialAccount[]
   aliases       PersonAlias[]
+  interests     PersonInterest[]
+  giftIdeas     PersonGiftIdea[]
+  noteEntries   PersonNote[]
   connectionsLow  Connection[] @relation("PersonLow")
   connectionsHigh Connection[] @relation("PersonHigh")
   eventParticipations EventParticipant[]
 
   @@index([ownerId])
   @@index([name])
+}
+
+// Freizeit-Vorlieben (Film|Buch|Serie|Sonstiges) und Ernährung (Allergie|Unvertraeglichkeit|Diaet|Sonstiges) —
+// gleiche Form, deshalb eine Tabelle statt zwei.
+model PersonInterest {
+  id        Int      @id @default(autoincrement())
+  personId  Int
+  person    Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  category  String
+  title     String
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([personId])
+  @@index([category])
+}
+
+model PersonGiftIdea {
+  id          Int      @id @default(autoincrement())
+  personId    Int
+  person      Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  title       String
+  note        String?
+  isFulfilled Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([personId])
+}
+
+// Freitext-Notiz, optional als abhakbare Checkliste — Aufbau wie PersonGiftIdea, aber ohne Titel/Notiz-Trennung.
+model PersonNote {
+  id          Int      @id @default(autoincrement())
+  personId    Int
+  person      Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  text        String
+  isChecklist Boolean  @default(false)
+  isDone      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([personId])
 }
 
 model PersonAlias {

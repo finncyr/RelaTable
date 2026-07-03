@@ -93,6 +93,8 @@ export interface ImportReport {
 	journalCreated: number;
 	eventsCreated: number;
 	skipped: number;
+	/** IDs of all persons touched (created or reused) by this import — lets callers focus/highlight them. */
+	personIds: number[];
 }
 
 export interface ImportResult {
@@ -114,7 +116,8 @@ const emptyReport = (): ImportReport => ({
 	periodsCreated: 0,
 	journalCreated: 0,
 	eventsCreated: 0,
-	skipped: 0
+	skipped: 0,
+	personIds: []
 });
 
 // --- value normalizers -----------------------------------------------------
@@ -243,6 +246,7 @@ async function applyPayload(
 		}
 		if (p.ref) register(p.ref, personId);
 		register(p.name, personId);
+		report.personIds.push(personId);
 	}
 
 	// 2) Connections + periods + journal.

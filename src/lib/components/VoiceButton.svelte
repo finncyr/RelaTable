@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onDestroy, onMount, tick } from 'svelte';
-	import { invalidateAll } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import { fade, scale } from 'svelte/transition';
 
 	type ChatMsg = { role: 'user' | 'assistant'; content: string };
@@ -20,14 +20,25 @@
 	let error = $state('');
 	let bars = $state<number[]>(Array(BARS).fill(0));
 
-	type Reason = 'checking' | 'no-key' | 'invalid-key' | 'no-credits' | 'error' | null;
+	type Reason =
+		| 'checking'
+		| 'no-key'
+		| 'invalid-key'
+		| 'no-credits'
+		| 'error'
+		| 'no-groq-key'
+		| 'invalid-groq-key'
+		| null;
 	const MSG: Record<NonNullable<Reason>, string> = {
 		checking: 'Sprachdienst wird geprüft…',
 		'no-key': 'Kein OpenRouter-API-Key — in den Einstellungen hinterlegen.',
 		'invalid-key': 'OpenRouter-API-Key ungültig.',
 		'no-credits': 'Keine Credits mehr verfügbar.',
-		error: 'Sprachdienst nicht erreichbar.'
+		error: 'Sprachdienst nicht erreichbar.',
+		'no-groq-key': 'Kein Groq-API-Key (Desktop-Spracherkennung) — in den Einstellungen hinterlegen.',
+		'invalid-groq-key': 'Groq-API-Key ungültig.'
 	};
+	const isAndroid = typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent);
 	let reason = $state<Reason>(null);
 	let statusMsg = $state('');
 	let popup = $state(false);
@@ -102,7 +113,17 @@
 			try {
 				const r = await fetch('/api/voice-status');
 				const data = await r.json().catch(() => ({}));
-				reason = r.ok ? (data.reason ?? null) : 'error';
+				if (!r.ok) {
+					reason = 'error';
+				} else if (data.reason) {
+					reason = data.reason;
+				} else if (!isAndroid && data.groqReason === 'no-key') {
+					reason = 'no-groq-key';
+				} else if (!isAndroid && data.groqReason === 'invalid-key') {
+					reason = 'invalid-groq-key';
+				} else {
+					reason = null;
+				}
 				if (data.message) statusMsg = data.message;
 			} catch {
 				reason = 'error';
@@ -117,6 +138,7 @@
 	function stopCapture() {
 		active = false;
 		bars = Array(BARS).fill(0);
+		clearTimeout(srHintTimer);
 		if (raf) cancelAnimationFrame(raf);
 		try {
 			rec?.stop();
@@ -141,6 +163,10 @@
 	let ctx: AudioContext | null = null;
 	let raf = 0;
 	let rec: any = null;
+	let srHintTimer = 0;
+	let mediaRec: MediaRecorder | null = null;
+	let mediaChunks: Blob[] = [];
+	let mediaRecMime = '';
 	let transcript = $state('');
 	let interimTranscript = $state('');
 	let lastInterimTranscript = '';
@@ -151,6 +177,12 @@
 	async function openAndStart() {
 		if (blocked) {
 			blockedClick();
+			return;
+		}
+		// Offene Konversation (z. B. wartende Bestätigung) wieder anzeigen statt neu aufzunehmen.
+		if (convo.length > 0) {
+			convoOpen = true;
+			void scrollToBottom();
 			return;
 		}
 		await start();
@@ -185,7 +217,18 @@
 		rec.lang = 'de-DE';
 		rec.continuous = !isAndroid;
 		rec.interimResults = true;
+		// ponytail: SR is dead on some Chromium/Linux builds but the mic is only enabled when
+		// Groq is configured & valid (voice-status gate), so the MediaRecorder fallback already
+		// covers this silently — just log it, no user-facing error.
+		srHintTimer = window.setTimeout(() => {
+			if (active && !transcript && !interimTranscript) {
+				logClientEvent('speech.sr_hint_timeout');
+			}
+		}, 4000);
 		rec.onresult = (e: any) => {
+			clearTimeout(srHintTimer);
+			// The 4s hint may already have fired before this first real result came in — clear it.
+			if (error) error = '';
 			let interim = '';
 			for (let i = e.resultIndex; i < e.results.length; i++) {
 				if (e.results[i].isFinal) {
@@ -220,9 +263,16 @@
 			if (code === 'not-allowed') {
 				error = 'Kein Mikrofonzugriff — bitte Browser-Berechtigung erlauben.';
 			} else if (code === 'service-not-allowed' || code === 'network') {
-				// Chromium on Linux without embedded Google key — silently fall through to text input
-				stopCapture();
-				active = true;
+				// Chromium on Linux without embedded Google key — keep overlay open, fall through to text input
+				bars = Array(BARS).fill(0);
+				if (raf) { cancelAnimationFrame(raf); raf = 0; }
+				try { rec?.stop(); } catch { /* noop */ }
+				rec = null;
+				interimTranscript = '';
+				stream?.getTracks().forEach((t) => t.stop());
+				void ctx?.close();
+				stream = null; ctx = null;
+				// active stays true → overlay stays open
 				error = 'Spracherkennung nicht verfügbar — tippe deine Eingabe.';
 				phase = 'error';
 				return;
@@ -267,9 +317,35 @@
 			convoOpen = true;
 			void scrollToBottom();
 		}
+
+		// Parallel MediaRecorder as Groq-Whisper fallback (desktop only — Android SR works natively)
+		if (!isAndroid) {
+			navigator.mediaDevices.getUserMedia({ audio: true }).then((mStream) => {
+				stream = mStream;
+				const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+					? 'audio/webm;codecs=opus'
+					: MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
+						? 'audio/ogg;codecs=opus'
+						: '';
+				mediaRecMime = mime;
+				mediaChunks = [];
+				mediaRec = new MediaRecorder(mStream, mime ? { mimeType: mime } : undefined);
+				mediaRec.ondataavailable = (e) => { if (e.data.size > 0) mediaChunks.push(e.data); };
+				mediaRec.start(1000);
+				logClientEvent('speech.mediarecorder_started', { mime });
+			}).catch(() => { /* mic access denied or unavailable — SR-only */ });
+		}
+	}
+
+
+	function stopMediaRec() {
+		try { mediaRec?.stop(); } catch { /* noop */ }
+		mediaRec = null;
+		mediaChunks = [];
 	}
 
 	function cancel() {
+		stopMediaRec();
 		stopCapture();
 		transcript = '';
 		interimTranscript = '';
@@ -279,6 +355,24 @@
 
 	async function confirm() {
 		const text = [transcript, interimTranscript || lastInterimTranscript].join(' ').trim();
+
+		// If SR produced no text but MediaRecorder has audio → try Groq transcription
+		if (!text && mediaRec && mediaChunks.length > 0) {
+			// Stop MediaRecorder and collect final chunk before creating blob
+			const blob = await new Promise<Blob>((resolve) => {
+				const chunks = mediaChunks;
+				const mime = mediaRecMime;
+				mediaRec!.onstop = () => resolve(new Blob(chunks, { type: mime || 'audio/webm' }));
+				try { mediaRec!.stop(); } catch { resolve(new Blob(chunks, { type: mime || 'audio/webm' })); }
+			});
+			mediaRec = null;
+			mediaChunks = [];
+			stopCapture();
+			await transcribeAndSend(blob);
+			return;
+		}
+
+		stopMediaRec();
 		stopCapture();
 		if (!text) {
 			logClientEvent('speech.empty_confirm', {
@@ -294,6 +388,42 @@
 			return;
 		}
 		await send(text, { compact: compactAutoMode });
+	}
+
+	async function transcribeAndSend(blob: Blob) {
+		clearTimeout(doneTimer);
+		error = '';
+		phase = 'processing';
+		busy = true;
+		if (!compactAutoMode) { convoOpen = true; void scrollToBottom(); }
+		const fd = new FormData();
+		fd.append('audio', blob, 'audio.webm');
+		const ctrl = new AbortController();
+		const timer = window.setTimeout(() => ctrl.abort(), 60_000);
+		try {
+			const res = await fetch('/api/transcribe', { method: 'POST', body: fd, signal: ctrl.signal });
+			if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.message || `Fehler ${res.status}`);
+			const { text } = await res.json() as { text: string };
+			if (!text.trim()) {
+				error = 'Nichts verstanden — bitte erneut sprechen oder tippen.';
+				phase = 'error';
+				convoOpen = true;
+				void scrollToBottom();
+				return;
+			}
+			logClientEvent('speech.groq_transcription', { chars: text.length });
+			await send(text, { compact: compactAutoMode });
+		} catch (e) {
+			error = e instanceof Error && e.name === 'AbortError'
+				? 'Transkription-Timeout'
+				: e instanceof Error ? e.message : 'Transkription fehlgeschlagen';
+			phase = 'error';
+			convoOpen = true;
+			void scrollToBottom();
+		} finally {
+			window.clearTimeout(timer);
+			busy = false;
+		}
 	}
 
 	async function send(text: string, opts: { compact?: boolean } = {}) {
@@ -340,9 +470,26 @@
 			if (resp.wrote) {
 				phase = 'updating';
 				await invalidateAll();
+				const personIds: unknown = resp.personIds;
+				if (Array.isArray(personIds) && personIds.length) {
+					const id = personIds[personIds.length - 1];
+					try { localStorage.setItem('graph.focus', String(id)); } catch { /* private mode etc. */ }
+					await goto(`/graph?focus=${id}`, { noScroll: true, keepFocus: true });
+				}
 			}
 			phase = 'done';
-			doneTimer = window.setTimeout(() => (phase = 'idle'), 3000);
+			// Nach erfolgreichem Schreiben ist die Erzählung abgeschlossen — Verlauf
+			// verwerfen, sonst zeigt der FAB dauerhaft "Offene Erzählung" an, obwohl
+			// die Änderungen längst übernommen wurden.
+			const finished = !compact && resp.wrote;
+			doneTimer = window.setTimeout(() => {
+				phase = 'idle';
+				if (finished) {
+					convo = [];
+					history = [];
+					convoOpen = false;
+				}
+			}, 3000);
 		} catch (e) {
 			error =
 				e instanceof Error && e.name === 'AbortError'
@@ -371,7 +518,17 @@
 		send(t);
 	}
 
+	// Minimiert nur — Verlauf bleibt erhalten, damit eine offene Rückfrage (z. B.
+	// "Soll ich das übernehmen?") über das Mikro-Symbol wieder aufgerufen werden kann.
 	function closeConvo() {
+		convoOpen = false;
+		error = '';
+		phase = 'idle';
+		clearTimeout(doneTimer);
+	}
+
+	// Verwirft die Konversation komplett (neues Thema statt Rückkehr zur alten Rückfrage).
+	function discardConvo() {
 		convoOpen = false;
 		convo = [];
 		history = [];
@@ -383,6 +540,8 @@
 
 	onDestroy(() => {
 		clearTimeout(doneTimer);
+		clearTimeout(srHintTimer);
+		stopMediaRec();
 		stopCapture();
 		dimmed = false;
 	});
@@ -411,14 +570,22 @@
 			>
 				{voiceStatus}
 			</div>
+		{:else if convo.length > 0 && !popup}
+			<div
+				class="absolute bottom-full right-0 mb-2 max-w-[220px] rounded-lg border border-line bg-card px-3 py-1.5 text-[12px] text-ink shadow-lg"
+				role="status"
+				aria-live="polite"
+			>
+				Offene Erzählung — tippen zum Fortsetzen
+			</div>
 		{/if}
 		<button
 			type="button"
 			onclick={openAndStart}
-			aria-label="Mikrofon starten"
+			aria-label={convo.length > 0 ? 'Erzählung fortsetzen' : 'Mikrofon starten'}
 			aria-disabled={blocked}
-			title={reason ? (statusMsg || MSG[reason]) : error || 'Erzählen'}
-			class="grid h-14 w-14 place-items-center rounded-full shadow-lg transition-all duration-200
+			title={reason ? (statusMsg || MSG[reason]) : error || (convo.length > 0 ? 'Erzählung fortsetzen' : 'Erzählen')}
+			class="relative grid h-14 w-14 place-items-center rounded-full shadow-lg transition-all duration-200
 				{blocked
 				? 'cursor-not-allowed border border-line bg-card text-mut opacity-50'
 				: error
@@ -441,6 +608,9 @@
 				<path d="M5 10a7 7 0 0 0 14 0" />
 				<line x1="12" y1="19" x2="12" y2="22" />
 			</svg>
+			{#if convo.length > 0}
+				<span class="absolute right-0 top-0 h-3 w-3 rounded-full border-2 border-bg bg-warn" aria-hidden="true"></span>
+			{/if}
 		</button>
 	</div>
 {/if}
@@ -465,12 +635,21 @@
 								{voiceStatus}
 							</span>
 						{/if}
-						<button
-							type="button"
-							onclick={closeConvo}
-							class="text-mut hover:text-ink"
-							aria-label="Schließen">✕</button
-						>
+						<div class="flex items-center gap-2">
+							<button
+								type="button"
+								onclick={discardConvo}
+								class="text-[11px] text-mut hover:text-warn"
+								aria-label="Verwerfen">Verwerfen</button
+							>
+							<button
+								type="button"
+								onclick={closeConvo}
+								class="text-mut hover:text-ink"
+								title="Minimieren — über das Mikro-Symbol wieder aufrufbar"
+								aria-label="Minimieren">✕</button
+							>
+						</div>
 					</div>
 					<div
 						bind:this={msgList}

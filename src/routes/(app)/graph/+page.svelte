@@ -12,9 +12,12 @@
 	let legendEl = $state<HTMLDivElement | undefined>();
 	let cy: any = null;
 	let fgInstance: any = null;
+	// Plain mutable object read by canvas callbacks every frame (not Svelte state)
+	const fgMut = { focusId: null as number | null, neighborIds: new Set<number>(), searchHits: new Set<number>() };
 	let engine = $state<'cytoscape' | 'forcegraph'>(
-		browser ? ((localStorage.getItem('graph.engine') as 'forcegraph' | null) ?? 'cytoscape') : 'cytoscape'
+		browser ? ((localStorage.getItem('graph.engine') as 'forcegraph' | null) ?? 'forcegraph') : 'forcegraph'
 	);
+	let searchAutoSwitched = false;
 	const basePos = new Map<string, { x: number; y: number }>(); // layout positions, restored before each focus
 	let layoutName = $state('circle');
 	let panel = $state<null | { id: number; name: string; city: string | null; degree: number; x: number; y: number }>(null);
@@ -23,10 +26,12 @@
 
 	let searchOpen = $state(false);
 	let searchQ = $state('');
+	let searchResults = $state<{ id: number; name: string; city: string | null; image: string | null }[]>([]);
 	let searchInput: HTMLInputElement;
 	let searchTimer: ReturnType<typeof setTimeout>;
 	let longPressTimer: ReturnType<typeof setTimeout> | null = null;
 	let suppressTapUntil = 0;
+	let edgeMenu = $state<null | { source: number; target: number; typeName: string | null; x: number; y: number }>(null);
 	let mergeDialog = $state<null | {
 		sourceId: number;
 		sourceName: string;
@@ -34,9 +39,120 @@
 		selectedId: number | null;
 	}>(null);
 
+	type QCStep =
+		| { step: 1 }
+		| { step: 2; sourceId: number; sourceName: string }
+		| { step: 3; sourceId: number; sourceName: string; typeId: number; typeName: string };
+	let quickConnect = $state<QCStep | null>(null);
+	let qcSearch = $state('');
+	let qcTargets = $state<Set<number>>(new Set());
+	let qcError = $state<string | null>(null);
+	let qcForm = $state<HTMLFormElement | undefined>();
+	let qcInput1 = $state<HTMLInputElement | undefined>();
+	let qcInput3 = $state<HTMLInputElement | undefined>();
+	let searchActiveIdx = $state(-1);
+	let qcActiveIdx = $state(-1);
+	let searchListEl = $state<HTMLDivElement | undefined>();
+	let qcList1El = $state<HTMLDivElement | undefined>();
+	let qcList3El = $state<HTMLDivElement | undefined>();
+
+	type QLStep = { step: 1 } | { step: 2; city: string };
+	let quickLocation = $state<QLStep | null>(null);
+	let qlSearch = $state('');
+	let qlTargets = $state<Set<number>>(new Set());
+	let qlActiveIdx = $state(-1);
+	let qlInput1 = $state<HTMLInputElement | undefined>();
+	let qlInput2 = $state<HTMLInputElement | undefined>();
+	let qlList1El = $state<HTMLDivElement | undefined>();
+	let qlList2El = $state<HTMLDivElement | undefined>();
+
+	// Matches on the real name or any stored alias/nickname, so "Bulle" finds "Christian Müller" if that's an alias.
+	function matchesQuery(name: string, aliases: readonly string[] | undefined, q: string) {
+		return name.toLowerCase().includes(q) || (aliases ?? []).some((a) => a.toLowerCase().includes(q));
+	}
+	function navIdx(cur: number, total: number, d: number) { return total === 0 ? -1 : (cur + d + total) % total; }
+	function scrollActive(listEl: HTMLDivElement | undefined, idx: number) {
+		queueMicrotask(() => (listEl?.children[idx] as HTMLElement)?.scrollIntoView({ block: 'nearest' }));
+	}
+
+	$effect(() => {
+		if (quickConnect?.step === 1) queueMicrotask(() => qcInput1?.focus());
+		if (quickConnect?.step === 3) queueMicrotask(() => qcInput3?.focus());
+	});
+	$effect(() => { qcSearch; quickConnect?.step; qcActiveIdx = -1; });
+
+	$effect(() => {
+		if (quickLocation?.step === 1) queueMicrotask(() => qlInput1?.focus());
+		if (quickLocation?.step === 2) queueMicrotask(() => qlInput2?.focus());
+	});
+	$effect(() => { qlSearch; quickLocation?.step; qlActiveIdx = -1; });
+
+	const allCities = $derived([...new Set(data.graph.nodes.map((n) => n.city).filter(Boolean) as string[])].sort());
+	const qlFilteredCities = $derived.by(() => {
+		const q = qlSearch.trim().toLowerCase();
+		return q ? allCities.filter((c) => c.toLowerCase().includes(q)) : allCities;
+	});
+	const qlFilteredPersons = $derived.by(() => {
+		if (!quickLocation || quickLocation.step !== 2) return [];
+		const q = qlSearch.trim().toLowerCase();
+		return data.graph.nodes.filter((n) => !q || matchesQuery(n.name, n.aliases, q));
+	});
+
+	function openQuickLocation() {
+		quickLocation = { step: 1 };
+		qlSearch = '';
+		qlTargets = new Set();
+		qlActiveIdx = -1;
+		qlSelectedCity = '';
+		menu = null; panel = null; searchOpen = false;
+	}
+	function closeQuickLocation() {
+		quickLocation = null;
+		qlSearch = '';
+		qlTargets = new Set();
+		qlActiveIdx = -1;
+		qlSelectedCity = '';
+	}
+	function qlPickCity(city: string) {
+		qlSelectedCity = city;
+		quickLocation = { step: 2, city };
+		qlSearch = '';
+		qlActiveIdx = -1;
+	}
+	let qlSelectedCity = $state(''); // confirmed city from step 1 (either existing or typed new)
+
+	const qcFilteredPersons = $derived.by(() => {
+		if (!quickConnect) return [];
+		const q = qcSearch.trim().toLowerCase();
+		const excludeId = 'sourceId' in quickConnect ? quickConnect.sourceId : -1;
+		return data.graph.nodes
+			.filter((n) => n.id !== excludeId && (!q || matchesQuery(n.name, n.aliases, q)))
+			.slice(0, 60);
+	});
+
+	function openQuickConnect() {
+		quickConnect = { step: 1 };
+		qcSearch = '';
+		qcTargets = new Set();
+		qcError = null;
+		menu = null; panel = null; searchOpen = false;
+	}
+	function closeQuickConnect() {
+		quickConnect = null;
+		qcSearch = '';
+		qcTargets = new Set();
+		qcError = null;
+	}
+
 	// Filter only after the user pauses typing for 500ms.
+	// On first keystroke while focused: immediately clear focus state + fit camera.
 	function onSearchInput() {
 		clearTimeout(searchTimer);
+		searchActiveIdx = -1;
+		if (focusId != null) {
+			localStorage.removeItem('graph.focus');
+			goto('/graph', { replaceState: true, noScroll: true, keepFocus: true });
+		}
 		searchTimer = setTimeout(() => applySearch(searchQ), 500);
 	}
 
@@ -150,7 +266,7 @@
 			data: { id: String(n.id), name: n.name, aliases: n.aliases, image: n.image, degree: n.degree, isolated: n.degree === 0 }
 		}));
 		const edges = data.graph.edges.map((e) => ({
-			data: { id: e.id, source: String(e.source), target: String(e.target), color: e.color }
+			data: { id: e.id, source: String(e.source), target: String(e.target), color: e.color, typeName: e.typeName }
 		}));
 		return [...nodes, ...edges];
 	}
@@ -339,10 +455,18 @@
 			const e = evt.target;
 			goto(`/pair/${e.data('source')}-${e.data('target')}`);
 		});
+		cy.on('cxttap', 'edge', (evt: any) => {
+			if (!isInteractiveEdge(evt.target)) return;
+			const e = evt.target;
+			const pos = evt.renderedPosition;
+			edgeMenu = { source: Number(e.data('source')), target: Number(e.data('target')), typeName: e.data('typeName'), x: pos.x, y: pos.y };
+			menu = null; panel = null;
+		});
 		cy.on('tap', (evt: any) => {
 			if (evt.target === cy) {
 				panel = null;
 				menu = null;
+				edgeMenu = null;
 				mergeDialog = null;
 			}
 		});
@@ -410,7 +534,7 @@
 	function buildFgData() {
 		return {
 			nodes: data.graph.nodes.map((n) => ({ id: n.id, name: n.name, val: Math.max(1, n.degree), img: n.image })),
-			links: data.graph.edges.map((e) => ({ source: e.source, target: e.target, color: e.color }))
+			links: data.graph.edges.map((e) => ({ source: e.source, target: e.target, color: e.color, typeName: e.typeName }))
 		};
 	}
 
@@ -435,6 +559,8 @@
 			return Math.max(8, Math.min(26, 8 + val * 1.4));
 		}
 
+		let lastClickId = -1, lastClickTime = 0;
+
 		fgInstance = ForceGraph()(container)
 			.width(container.clientWidth)
 			.height(container.clientHeight)
@@ -445,17 +571,21 @@
 				const r = nodeRadius(node.val || 1);
 				const x: number = node.x, y: number = node.y;
 
-				// Glow ring
+				const inFocus = fgMut.focusId != null;
+				const inSearch = fgMut.searchHits.size > 0;
+				const active = inFocus ? fgMut.neighborIds.has(node.id) : inSearch ? fgMut.searchHits.has(node.id) : true;
+				ctx.globalAlpha = active ? 1 : 0.06;
+
+				const isHit = fgMut.searchHits.has(node.id);
 				ctx.shadowBlur = 14;
 				ctx.shadowColor = '#7aa040';
 				ctx.beginPath();
 				ctx.arc(x, y, r + 1.5, 0, 2 * Math.PI);
-				ctx.strokeStyle = '#8aaa50';
-				ctx.lineWidth = 1.5;
+				ctx.strokeStyle = isHit ? '#c8d850' : '#8aaa50';
+				ctx.lineWidth = isHit ? 2.5 : 1.5;
 				ctx.stroke();
 				ctx.shadowBlur = 0;
 
-				// Photo clipped to circle (fallback: dark fill)
 				ctx.save();
 				ctx.beginPath();
 				ctx.arc(x, y, r, 0, 2 * Math.PI);
@@ -469,13 +599,13 @@
 				}
 				ctx.restore();
 
-				// Name label
 				const fs = Math.max(6, 9 / gs);
 				ctx.font = `${fs}px system-ui,sans-serif`;
 				ctx.fillStyle = 'rgba(172,188,162,0.9)';
 				ctx.textAlign = 'center';
 				ctx.textBaseline = 'top';
 				ctx.fillText(String(node.name), x, y + r + 2 / gs);
+				ctx.globalAlpha = 1;
 			})
 			.nodePointerAreaPaint((node: any, color: string, ctx: CanvasRenderingContext2D) => {
 				const r = nodeRadius(node.val || 1);
@@ -484,9 +614,22 @@
 				ctx.fillStyle = color;
 				ctx.fill();
 			})
-			.linkColor((l: any) => l.color || 'rgba(255,255,255,0.18)')
+			.linkColor((l: any) => {
+				if (fgMut.focusId != null) {
+					const src = typeof l.source === 'object' ? l.source.id : l.source;
+					const tgt = typeof l.target === 'object' ? l.target.id : l.target;
+					return fgMut.neighborIds.has(src) && fgMut.neighborIds.has(tgt) ? (l.color || 'rgba(255,255,255,0.5)') : 'rgba(255,255,255,0.03)';
+				}
+				return l.color || 'rgba(255,255,255,0.18)';
+			})
 			.linkWidth(0.8)
 			.onNodeClick((node: any, event: MouseEvent) => {
+				const now = Date.now();
+				if (node.id === lastClickId && now - lastClickTime < 300) {
+					lastClickId = -1; lastClickTime = 0;
+					focusOn(node.id); return;
+				}
+				lastClickId = node.id; lastClickTime = now;
 				const meta = data.graph.nodes.find((n) => n.id === node.id)!;
 				panel = { id: node.id, name: meta.name, city: meta.city, degree: meta.degree, x: event.offsetX, y: event.offsetY };
 				menu = null;
@@ -497,23 +640,87 @@
 				menu = { id: node.id, name: meta.name, x: event.offsetX, y: event.offsetY };
 				panel = null;
 			})
-			.onBackgroundClick(() => { panel = null; menu = null; mergeDialog = null; });
+			.onLinkClick((link: any) => {
+				const src = typeof link.source === 'object' ? link.source.id : link.source;
+				const tgt = typeof link.target === 'object' ? link.target.id : link.target;
+				goto(`/pair/${src}-${tgt}`);
+			})
+			.onLinkRightClick((link: any, event: MouseEvent) => {
+				event.preventDefault();
+				const src = typeof link.source === 'object' ? link.source.id : link.source;
+				const tgt = typeof link.target === 'object' ? link.target.id : link.target;
+				edgeMenu = { source: Number(src), target: Number(tgt), typeName: link.typeName ?? null, x: event.offsetX, y: event.offsetY };
+				menu = null; panel = null;
+			})
+			.onBackgroundClick(() => { panel = null; menu = null; edgeMenu = null; mergeDialog = null; });
 		graphReady = true;
 		graphSig = graphSignature();
+		if (focusId != null) applyFocusForce(focusId);
+	}
+
+	function applyFocusForce(id: number | null) {
+		if (!fgInstance) return;
+		fgMut.focusId = id;
+		fgMut.searchHits = new Set();
+		if (id == null) {
+			fgMut.neighborIds = new Set();
+			fgInstance.refresh?.();
+			fgInstance.zoomToFit?.(400, 40);
+			return;
+		}
+		const neighbors = new Set<number>([id]);
+		for (const e of data.graph.edges) {
+			if (e.source === id) neighbors.add(e.target);
+			else if (e.target === id) neighbors.add(e.source);
+		}
+		fgMut.neighborIds = neighbors;
+		fgInstance.refresh?.();
+		const node = fgInstance.graphData().nodes.find((n: any) => n.id === id);
+		if (node) {
+			fgInstance.centerAt?.(node.x, node.y, 600);
+			fgInstance.zoom?.(3, 600);
+		}
+	}
+
+	function applySearchForce(raw: string) {
+		const q = raw.trim().toLowerCase();
+		if (!q) {
+			fgMut.searchHits = new Set();
+			fgMut.focusId = null;
+			fgMut.neighborIds = new Set();
+			searchResults = [];
+			fgInstance?.refresh?.();
+			fgInstance?.zoomToFit?.(350, 40);
+			return;
+		}
+		const hits = data.graph.nodes.filter((n) => matchesQuery(n.name, n.aliases, q));
+		if (!hits.length) { searchResults = []; return; }
+		fgMut.searchHits = new Set(hits.map((h) => h.id));
+		fgMut.focusId = null;
+		fgMut.neighborIds = new Set();
+		searchResults = hits.map((h) => ({ id: h.id, name: h.name, city: h.city, image: h.image }));
+		fgInstance?.refresh?.();
+		if (hits.length === 1) {
+			clearTimeout(searchTimer);
+			searchOpen = false; searchQ = ''; searchResults = [];
+			fgMut.searchHits = new Set();
+			focusOn(hits[0].id);
+		}
 	}
 
 	function destroyEngines() {
 		cy?.destroy(); cy = null;
 		try { fgInstance?._destructor?.(); } catch { /* ignore */ }
 		fgInstance = null;
+		fgMut.focusId = null; fgMut.neighborIds = new Set(); fgMut.searchHits = new Set();
 		if (container) container.innerHTML = '';
 		graphReady = false;
 	}
 
-	async function setEngine(e: 'cytoscape' | 'forcegraph') {
+	async function setEngine(e: 'cytoscape' | 'forcegraph', save = true) {
 		if (e === engine) return;
 		engine = e;
-		localStorage.setItem('graph.engine', e);
+		if (save) localStorage.setItem('graph.engine', e);
 		destroyEngines();
 		if (e === 'cytoscape') await initCy();
 		else await initForceGraph();
@@ -538,8 +745,9 @@
 	}
 
 	function applyFocus(id: number | null) {
+		if (engine === 'forcegraph') { applyFocusForce(id); return; }
 		if (!cy) return;
-		cy.nodes().removeClass('hidden faded focus dim');
+		cy.nodes().removeClass('hidden faded focus dim search-hit');
 		cy.edges().removeClass('hidden dim focus-edge');
 		cy.nodes().removeStyle('border-color border-width'); // clear any leftover flare from a previous focus
 		if (id == null) {
@@ -548,6 +756,11 @@
 		}
 		const node = cy.getElementById(String(id));
 		if (node.empty()) return;
+		// Guard: if layout hasn't settled yet (e.g. search fired before layoutstop), snapshot now.
+		if (basePos.size === 0) {
+			cy.layout({ name: layoutName, animate: false, fit: false, padding: 40 }).run();
+			saveBase();
+		}
 		restoreBase(); // reset to layout positions first, so refocusing never piles nodes up
 		const neighborhood = node.closedNeighborhood(); // node + direct contacts + connecting edges (depth 1)
 		const others = cy.elements().difference(neighborhood);
@@ -585,6 +798,10 @@
 			const node = cy?.getElementById(String(id));
 			if (node && !node.empty() && !isInteractiveNode(node)) return;
 		}
+		searchOpen = false;
+		searchQ = '';
+		searchResults = [];
+		cy?.nodes().removeClass('search-hit');
 		panel = null;
 		menu = null;
 		mergeDialog = null;
@@ -597,35 +814,52 @@
 		goto('/graph', { noScroll: true, keepFocus: true });
 	}
 
-	// Ctrl/Cmd+F → slide-in search. Non-destructive: dim non-matches + pan/zoom the camera onto the
-	// hits (no node repositioning — moving nodes per keystroke piled them onto the centre).
+	// Ctrl/Cmd+F → slide-in search. Resets to full circle view on every call so no focus artefacts bleed in.
 	function applySearch(raw: string) {
+		if (engine === 'forcegraph') { applySearchForce(raw); return; }
 		if (!cy) return;
 		const q = raw.trim().toLowerCase();
-		cy.nodes().removeClass('dim search-hit');
-		cy.edges().removeClass('dim');
+		// Full reset: stop any running layout/focus animation, restore positions, clear classes.
+		cy.stop(true, true);
+		cy.nodes().removeClass('hidden faded focus dim search-hit');
+		cy.edges().removeClass('hidden dim focus-edge');
+		cy.nodes().removeStyle('border-color border-width');
+		if (basePos.size > 0) restoreBase();
 		if (!q) {
-			applyFocus(focusId); // restore normal/focus view
+			cy.animate({ fit: { eles: cy.nodes(':visible'), padding: 40 }, duration: 350, easing: 'ease-in-out' });
 			return;
 		}
-		const hits = cy.nodes().filter((n: any) => String(n.data('name')).toLowerCase().includes(q));
-		if (hits.empty()) return; // no match → leave the graph as-is (already un-dimmed above)
-		// Exactly one match → focus it directly.
+		const hits = cy.nodes().filter((n: any) => matchesQuery(String(n.data('name')), n.data('aliases'), q));
+		if (hits.empty()) return; // no match → leave the graph as-is
+		// Single match → goto updates focusId → topbar shows name, $effect fires applyFocus.
 		if (hits.length === 1) {
 			clearTimeout(searchTimer);
-			searchOpen = false;
-			searchQ = '';
-			focusOn(Number(hits[0].id()));
+			searchOpen = false; searchQ = ''; searchResults = [];
+			cy.nodes().removeClass('search-hit');
+			const id = Number(hits[0].id());
+			localStorage.setItem('graph.focus', String(id));
+			goto(`/graph?focus=${id}`, { noScroll: true, keepFocus: true });
 			return;
 		}
-		// Multiple matches: dim everything else (connections stay visible but dimmed), highlight the
-		// hits and bring them into the centre of the screen by moving the camera, not the nodes.
 		cy.nodes().addClass('dim');
 		cy.edges().addClass('dim');
 		hits.removeClass('dim').addClass('search-hit');
-		cy.animate({ fit: { eles: hits, padding: 90 }, duration: 450, easing: 'ease-in-out' });
+		searchResults = hits.map((n: any) => {
+			const meta = data.graph.nodes.find((x) => x.id === Number(n.id()))!;
+			return { id: meta.id, name: meta.name, city: meta.city, image: meta.image };
+		});
+		// list only, no node movement / zoom
 	}
 	function openSearch() {
+		if (engine === 'forcegraph') {
+			searchAutoSwitched = true;
+			layoutName = 'grid';
+			setEngine('cytoscape', false).then(() => {
+				searchOpen = true;
+				queueMicrotask(() => searchInput?.focus());
+			});
+			return;
+		}
 		searchOpen = true;
 		queueMicrotask(() => searchInput?.focus());
 	}
@@ -633,20 +867,36 @@
 		clearTimeout(searchTimer);
 		searchOpen = false;
 		searchQ = '';
+		searchResults = [];
 		cy?.nodes().removeClass('search-hit');
+		if (searchAutoSwitched) {
+			searchAutoSwitched = false;
+			setEngine('forcegraph', false);
+			return;
+		}
 		applyFocus(focusId);
 	}
 
 	function zoomBy(factor: number) {
+		if (engine === 'forcegraph') { fgInstance?.zoom?.(fgInstance.zoom() * factor, 200); return; }
 		if (!cy) return;
 		cy.zoom({ level: cy.zoom() * factor, renderedPosition: { x: container.clientWidth / 2, y: container.clientHeight / 2 } });
 	}
 	function fit() {
+		if (engine === 'forcegraph') { fgInstance?.zoomToFit?.(400, 40); return; }
 		cy?.fit(undefined, 40);
 	}
 
 	// React to focus param + layout changes.
+	let prevFocusId: number | null = null;
 	$effect(() => {
+		const wasFocused = prevFocusId != null;
+		prevFocusId = focusId;
+		if (focusId == null && wasFocused && searchAutoSwitched && !searchOpen) {
+			searchAutoSwitched = false;
+			setEngine('forcegraph', false);
+			return;
+		}
 		applyFocus(focusId);
 	});
 	$effect(() => {
@@ -679,8 +929,23 @@
 			if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
 				e.preventDefault();
 				openSearch();
-			} else if (e.key === 'Escape' && searchOpen) {
-				closeSearch();
+			} else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+				const active = document.activeElement;
+				const hasInputSel = (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) && active.selectionStart !== active.selectionEnd;
+				if (!hasInputSel && !window.getSelection()?.toString()) {
+					e.preventDefault();
+					if (searchOpen) closeSearch();
+					openQuickConnect();
+				}
+			} else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l') {
+				e.preventDefault();
+				if (searchOpen) closeSearch();
+				openQuickLocation();
+			} else if (e.key === 'Escape') {
+				if (quickConnect) closeQuickConnect();
+				else if (quickLocation) closeQuickLocation();
+				else if (searchOpen) closeSearch();
+				else if (focusId != null) clearFocus();
 			}
 		};
 		window.addEventListener('keydown', onKey);
@@ -702,30 +967,7 @@
 			<button class="btn btn-sm" onclick={clearFocus}>‹ Zurück</button>
 		</Topbar>
 	{:else}
-		<Topbar title="Graph" subtitle={`${data.graph.nodes.length} Personen`}>
-			<div class="flex items-center gap-3">
-				{#if engine === 'cytoscape'}
-					<label class="flex items-center gap-1 text-xs text-mut">
-						Layout
-						<select class="inp btn-sm w-auto" bind:value={layoutName}>
-							<option value="circle">Kreis</option>
-							<option value="concentric">Konzentrisch</option>
-							<option value="grid">Raster</option>
-						</select>
-					</label>
-				{/if}
-				<div class="flex overflow-hidden rounded border border-line text-xs">
-					<button
-						class="px-2 py-1 transition-colors {engine === 'cytoscape' ? 'bg-accent/20 text-ink' : 'text-mut hover:text-ink'}"
-						onclick={() => setEngine('cytoscape')}
-					>Cyto</button>
-					<button
-						class="border-l border-line px-2 py-1 transition-colors {engine === 'forcegraph' ? 'bg-accent/20 text-ink' : 'text-mut hover:text-ink'}"
-						onclick={() => setEngine('forcegraph')}
-					>Force</button>
-				</div>
-			</div>
-		</Topbar>
+		<Topbar title="Graph" subtitle={`${data.graph.nodes.length} Personen`} />
 	{/if}
 
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -733,23 +975,61 @@
 	<div class="graph-bg-text" aria-hidden="true">GRAPH</div>
 	<div bind:this={container} class="absolute inset-0" style="touch-action: none"></div>
 
-	<!-- Ctrl+F search: slides in top-centre, pulls name matches to the middle live -->
+	<!-- Ctrl+F search: slides in top-centre -->
 	{#if searchOpen}
 		<div class="absolute left-1/2 top-3 z-30 -translate-x-1/2" transition:fly={{ y: -30, duration: 220 }}>
-			<div class="flex items-center gap-2 rounded-full border border-line bg-card px-3 py-1.5 shadow-lg backdrop-blur-md">
-				<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-mut">
-					<circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-				</svg>
-				<!-- svelte-ignore a11y_autofocus -->
-				<input
-					bind:this={searchInput}
-					bind:value={searchQ}
-					oninput={onSearchInput}
-					placeholder="Name suchen…"
-					class="w-48 bg-transparent text-sm outline-none"
-					aria-label="Personen im Graph suchen"
-				/>
-				<button class="text-mut hover:text-ink" onclick={closeSearch} aria-label="Suche schließen">✕</button>
+			<div class="flex flex-col gap-1">
+				<div class="flex items-center gap-2 rounded-full border border-line bg-card px-3 py-1.5 shadow-lg backdrop-blur-md">
+					<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-mut">
+						<circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+					</svg>
+					<!-- svelte-ignore a11y_autofocus -->
+					<input
+						bind:this={searchInput}
+						bind:value={searchQ}
+						oninput={onSearchInput}
+						onkeydown={(e) => {
+							if (e.key === 'ArrowDown') { e.preventDefault(); searchActiveIdx = navIdx(searchActiveIdx, searchResults.length, 1); scrollActive(searchListEl, searchActiveIdx); return; }
+							if (e.key === 'ArrowUp') { e.preventDefault(); searchActiveIdx = navIdx(searchActiveIdx, searchResults.length, -1); scrollActive(searchListEl, searchActiveIdx); return; }
+							if (e.key !== 'Enter') return;
+							if (searchActiveIdx >= 0 && searchResults[searchActiveIdx]) {
+								const id = searchResults[searchActiveIdx].id;
+								searchOpen = false; searchQ = ''; searchResults = []; searchActiveIdx = -1;
+								localStorage.setItem('graph.focus', String(id));
+								goto(`/graph?focus=${id}`, { noScroll: true, keepFocus: true });
+								return;
+							}
+							const target = searchResults[0] ?? null;
+							if (!target) return;
+							searchOpen = false; searchQ = ''; searchResults = []; searchActiveIdx = -1;
+							localStorage.setItem('graph.focus', String(target.id));
+							goto(`/graph?focus=${target.id}`, { noScroll: true, keepFocus: true });
+						}}
+						placeholder="Name suchen…"
+						class="w-48 bg-transparent text-sm outline-none"
+						aria-label="Personen im Graph suchen"
+					/>
+					<button class="text-mut hover:text-ink" onclick={closeSearch} aria-label="Suche schließen">✕</button>
+				</div>
+				{#if searchResults.length}
+					<div bind:this={searchListEl} class="search-results max-h-72 overflow-y-auto rounded-xl border border-line bg-card shadow-lg backdrop-blur-md">
+						{#each searchResults as r, i}
+							<button
+								class="flex w-full items-center justify-between border-b border-line px-4 py-2 text-left last:border-0 hover:bg-accent/10 outline-none {i === searchActiveIdx ? 'bg-accent/15' : ''}"
+								onclick={() => {
+									const id = r.id;
+									searchOpen = false; searchQ = ''; searchResults = []; searchActiveIdx = -1;
+									localStorage.setItem('graph.focus', String(id));
+									goto(`/graph?focus=${id}`, { noScroll: true, keepFocus: true });
+								}}
+							>
+								<span class="text-sm font-medium">{r.name}</span>
+								<span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-line bg-bg bg-cover bg-center text-[10px] text-mut" style={r.image ? `background-image:url('${r.image}')` : ''}>{r.image ? '' : r.name[0]}</span>
+								<span class="ml-3 shrink-0 text-xs text-mut">{r.city ?? '–'}</span>
+							</button>
+						{/each}
+					</div>
+				{/if}
 			</div>
 		</div>
 	{/if}
@@ -809,7 +1089,33 @@
 			<a class="block border-b border-line px-3 py-2 hover:bg-bg" href={`/personen/${menu!.id}/review`}>Review Verbindung</a>
 			<button class="block w-full border-b border-line px-3 py-2 text-left hover:bg-bg" onclick={() => openMergeDialog(menu!.id)}>Personen zusammenführen</button>
 			<button class="block w-full border-b border-line px-3 py-2 text-left hover:bg-bg" onclick={() => menu && focusOn(menu.id)}>Fokussieren</button>
-			<a class="block px-3 py-2 hover:bg-bg" href={`/karte?person=${menu!.id}`}>Auf Karte</a>
+			<a
+				class="block px-3 py-2 hover:bg-bg"
+				href={`/karte?focus=${menu!.id}`}
+				onclick={() => localStorage.setItem('graph.focus', String(menu!.id))}
+			>Auf Karte</a>
+		</div>
+	{/if}
+
+	{#if edgeMenu}
+		<div class="absolute z-20 w-48 overflow-hidden rounded-lg border border-line bg-card text-sm shadow-lg backdrop-blur-md"
+			style="left:{clamp(edgeMenu.x - 96, 8, (container?.clientWidth ?? 300) - 200)}px; top:{Math.min(edgeMenu.y, (container?.clientHeight ?? 300) - 200)}px">
+			<div class="border-b border-line px-3 py-1.5 text-[11px] text-mut">Verbindungstyp ändern</div>
+			{#each data.types as t}
+				<form method="POST" action="?/changeType" use:enhance={() => async ({ result, update }) => {
+					if (result.type !== 'failure') edgeMenu = null;
+					await update();
+				}}>
+					<input type="hidden" name="low" value={edgeMenu.source} />
+					<input type="hidden" name="high" value={edgeMenu.target} />
+					<input type="hidden" name="typeId" value={t.id} />
+					<button type="submit" class="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-bg {edgeMenu.typeName === t.name ? 'font-semibold text-ink' : 'text-mut'}">
+						<span class="inline-block h-2 w-2 shrink-0 rounded-full" style="background:{t.color}"></span>
+						{t.name}
+						{#if edgeMenu.typeName === t.name}<span class="ml-auto text-[10px] opacity-50">aktiv</span>{/if}
+					</button>
+				</form>
+			{/each}
 		</div>
 	{/if}
 
@@ -853,6 +1159,300 @@
 						<button class="btn btn-primary" disabled={!mergeDialog.selectedId}>Zusammenführen</button>
 					</div>
 				</form>
+			</div>
+		</div>
+	{/if}
+
+	{#if quickLocation}
+		<div class="absolute inset-0 z-30 flex items-center justify-center bg-black/35 p-4" transition:fly={{ y: -20, duration: 200 }}>
+			<div class="w-full max-w-md rounded-xl border border-line bg-card shadow-xl">
+				<div class="flex items-center justify-between border-b border-line px-4 py-3">
+					<div>
+						<b class="text-[13px]">Ort verwalten</b>
+						<div class="mt-0.5 flex items-center gap-2 text-[11px] text-mut">
+							{#each ([{ n: 1, label: 'Stadt' }, { n: 2, label: 'Personen' }] as const) as item}
+								<span class="flex items-center gap-1 {quickLocation.step === item.n ? 'text-ink' : 'opacity-40'}">
+									<span class="flex h-4 w-4 items-center justify-center rounded-full border text-[10px] {quickLocation.step === item.n ? 'border-accent bg-accent/20 text-ink' : 'border-line'}">{item.n}</span>
+									{item.label}
+								</span>
+								{#if item.n < 2}<span class="opacity-30">›</span>{/if}
+							{/each}
+						</div>
+					</div>
+					<button class="text-mut hover:text-ink" onclick={closeQuickLocation} aria-label="Schließen">✕</button>
+				</div>
+
+				{#if quickLocation.step === 1}
+					{@const newCity = qlSearch.trim()}
+					{@const isNew = newCity.length > 0 && !allCities.some((c) => c.toLowerCase() === newCity.toLowerCase())}
+					<div class="p-3">
+						<input
+							bind:this={qlInput1}
+							bind:value={qlSearch}
+							placeholder="Stadt suchen oder neu eingeben…"
+							class="inp w-full text-sm"
+							aria-label="Stadt suchen oder neu eingeben"
+							onkeydown={(e) => {
+								if (e.key === 'ArrowDown') { e.preventDefault(); qlActiveIdx = navIdx(qlActiveIdx, qlFilteredCities.length, 1); scrollActive(qlList1El, qlActiveIdx); return; }
+								if (e.key === 'ArrowUp') { e.preventDefault(); qlActiveIdx = navIdx(qlActiveIdx, qlFilteredCities.length, -1); scrollActive(qlList1El, qlActiveIdx); return; }
+								if (e.key === 'Enter') {
+									e.preventDefault();
+									if (isNew) { qlPickCity(newCity); return; }
+									const c = qlActiveIdx >= 0 ? qlFilteredCities[qlActiveIdx] : qlFilteredCities[0];
+									if (c) qlPickCity(c);
+								}
+							}}
+						/>
+					</div>
+					<div bind:this={qlList1El} class="max-h-64 overflow-y-auto">
+						{#if isNew}
+							<button
+								class="flex w-full items-center gap-3 border-b border-line px-4 py-2.5 text-left hover:bg-accent/10 outline-none"
+								onclick={() => qlPickCity(newCity)}
+							>
+								<span class="text-xs text-accent">+ Neu</span>
+								<span class="text-sm font-medium">{newCity}</span>
+							</button>
+						{/if}
+						{#each qlFilteredCities as city, idx}
+							<button
+								class="flex w-full items-center gap-3 border-b border-line px-4 py-2.5 text-left last:border-0 hover:bg-accent/10 outline-none {idx === qlActiveIdx ? 'bg-accent/15' : ''}"
+								onclick={() => qlPickCity(city)}
+							>
+								<span class="text-sm font-medium">{city}</span>
+								<span class="ml-auto text-xs text-mut">{data.graph.nodes.filter((n) => n.city === city).length} Pers.</span>
+							</button>
+						{:else}
+							{#if !isNew}<p class="px-4 py-3 text-sm text-mut">Keine Stadt – oben neue eingeben.</p>{/if}
+						{/each}
+					</div>
+
+				{:else if quickLocation.step === 2}
+					{@const ql2 = quickLocation}
+					<form method="POST" action="?/assignCity" use:enhance={() => async ({ result, update }) => {
+						if (result.type === 'failure') {
+							alert((result.data as any)?.assignCityError ?? 'Fehler');
+						} else {
+							closeQuickLocation();
+							await update();
+						}
+					}}>
+						<input type="hidden" name="city" value={ql2.city} />
+						{#each qlTargets as tid}
+							<input type="hidden" name="personId" value={tid} />
+						{/each}
+
+						<div class="p-3">
+							<p class="mb-2 text-[11px] text-mut">Stadt: <b class="text-ink">{ql2.city}</b></p>
+							<input
+								bind:this={qlInput2}
+								bind:value={qlSearch}
+								placeholder="Personen filtern…"
+								class="inp w-full text-sm"
+								aria-label="Personen filtern"
+								onkeydown={(e) => {
+									if (e.key === 'ArrowDown') { e.preventDefault(); qlActiveIdx = navIdx(qlActiveIdx, qlFilteredPersons.length, 1); scrollActive(qlList2El, qlActiveIdx); return; }
+									if (e.key === 'ArrowUp') { e.preventDefault(); qlActiveIdx = navIdx(qlActiveIdx, qlFilteredPersons.length, -1); scrollActive(qlList2El, qlActiveIdx); return; }
+									if (e.key === ' ' && qlActiveIdx >= 0) { e.preventDefault(); const p = qlFilteredPersons[qlActiveIdx]; if (p) { const next = new Set(qlTargets); if (next.has(p.id)) next.delete(p.id); else next.add(p.id); qlTargets = next; } return; }
+									if (e.key === 'Backspace' && qlSearch === '') { e.preventDefault(); quickLocation = { step: 1 }; qlSearch = ''; }
+								}}
+							/>
+						</div>
+						<div bind:this={qlList2El} class="max-h-60 overflow-y-auto border-t border-line">
+							{#each qlFilteredPersons as p, idx}
+								<label class="flex cursor-pointer items-center gap-3 border-b border-line px-4 py-2 last:border-0 hover:bg-bg {idx === qlActiveIdx ? 'bg-accent/10' : ''}">
+									<input
+										type="checkbox"
+										checked={qlTargets.has(p.id)}
+										onchange={(e) => {
+											const next = new Set(qlTargets);
+											if ((e.target as HTMLInputElement).checked) next.add(p.id); else next.delete(p.id);
+											qlTargets = next;
+										}}
+										class="accent-accent"
+									/>
+									<span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-line bg-bg bg-cover bg-center text-[10px] text-mut" style={p.image ? `background-image:url('${p.image}')` : ''}>{p.image ? '' : p.name[0]}</span>
+									<span class="flex-1 text-sm">{p.name}</span>
+									<span class="text-xs text-mut">{p.city ?? '–'}</span>
+								</label>
+							{:else}
+								<p class="px-4 py-3 text-sm text-mut">Keine Person gefunden.</p>
+							{/each}
+						</div>
+
+						<div class="flex items-center justify-between border-t border-line p-3">
+							<button type="button" class="text-xs text-mut hover:text-ink" onclick={() => { quickLocation = { step: 1 }; qlSearch = ''; }}>‹ Zurück</button>
+							<button class="btn btn-primary btn-sm" disabled={qlTargets.size === 0}>
+								{qlTargets.size} Person{qlTargets.size !== 1 ? 'en' : ''} zuweisen
+							</button>
+						</div>
+					</form>
+				{/if}
+			</div>
+		</div>
+	{/if}
+
+	{#if quickConnect}
+		<div class="absolute inset-0 z-30 flex items-center justify-center bg-black/35 p-4" transition:fly={{ y: -20, duration: 200 }}>
+			<div class="w-full max-w-md rounded-xl border border-line bg-card shadow-xl">
+				<!-- Header -->
+				<div class="flex items-center justify-between border-b border-line px-4 py-3">
+					<div>
+						<b class="text-[13px]">Verbindung anlegen</b>
+						<div class="mt-0.5 flex items-center gap-2 text-[11px] text-mut">
+							{#each ([{ n: 1, label: 'Person' }, { n: 2, label: 'Typ' }, { n: 3, label: 'Ziele' }] as const) as item}
+								<span class="flex items-center gap-1 {quickConnect.step === item.n ? 'text-ink' : 'opacity-40'}">
+									<span class="flex h-4 w-4 items-center justify-center rounded-full border text-[10px] {quickConnect.step === item.n ? 'border-accent bg-accent/20 text-ink' : 'border-line'}">{item.n}</span>
+									{item.label}
+								</span>
+								{#if item.n < 3}<span class="opacity-30">›</span>{/if}
+							{/each}
+						</div>
+					</div>
+					<button class="text-mut hover:text-ink" onclick={closeQuickConnect} aria-label="Schließen">✕</button>
+				</div>
+
+				{#if quickConnect.step === 1}
+					<!-- Step 1: pick source -->
+					<div class="p-3">
+						<input
+							bind:this={qcInput1}
+							bind:value={qcSearch}
+							placeholder="Person suchen…"
+							class="inp w-full text-sm"
+							aria-label="Quellperson suchen"
+							onkeydown={(e) => {
+								if (e.key === 'ArrowDown') { e.preventDefault(); qcActiveIdx = navIdx(qcActiveIdx, qcFilteredPersons.length, 1); scrollActive(qcList1El, qcActiveIdx); return; }
+								if (e.key === 'ArrowUp') { e.preventDefault(); qcActiveIdx = navIdx(qcActiveIdx, qcFilteredPersons.length, -1); scrollActive(qcList1El, qcActiveIdx); return; }
+								if (e.key === 'Enter') {
+									e.preventDefault();
+									const p = qcActiveIdx >= 0 ? qcFilteredPersons[qcActiveIdx] : qcFilteredPersons[0];
+									if (p) { quickConnect = { step: 2, sourceId: p.id, sourceName: p.name }; qcSearch = ''; qcActiveIdx = -1; }
+								}
+							}}
+						/>
+					</div>
+					<div bind:this={qcList1El} class="max-h-64 overflow-y-auto">
+						{#each qcFilteredPersons as p, idx}
+							<button
+							class="flex w-full items-center justify-between border-b border-line px-4 py-2 text-left last:border-0 hover:bg-accent/10 outline-none {idx === qcActiveIdx ? 'bg-accent/15' : ''}"
+							onclick={() => { quickConnect = { step: 2, sourceId: p.id, sourceName: p.name }; qcSearch = ''; qcActiveIdx = -1; }}
+							>
+								<span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-line bg-bg bg-cover bg-center text-[10px] text-mut" style={p.image ? `background-image:url('${p.image}')` : ''}>{p.image ? '' : p.name[0]}</span>
+								<span class="text-sm font-medium">{p.name}</span>
+								<span class="text-xs text-mut">{p.city ?? '–'}</span>
+							</button>
+						{:else}
+							<p class="px-4 py-3 text-sm text-mut">Keine Person gefunden.</p>
+						{/each}
+					</div>
+
+				{:else if quickConnect.step === 2}
+					<!-- Step 2: pick type -->
+					<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+					<div class="p-4" role="group" onkeydown={(e) => { if (e.key === 'Backspace' && document.activeElement?.tagName !== 'INPUT') { e.preventDefault(); quickConnect = { step: 1 }; qcSearch = ''; } }}>
+						<p class="mb-3 text-sm text-mut">Quelle: <b class="text-ink">{quickConnect.sourceName}</b></p>
+						<div class="grid grid-cols-2 gap-2">
+							{#each data.types as t}
+								<button
+									class="flex items-center gap-2 rounded-lg border border-line px-3 py-2.5 text-left text-sm hover:bg-bg"
+									onclick={() => {
+										if (quickConnect?.step === 2) {
+											quickConnect = { step: 3, sourceId: quickConnect.sourceId, sourceName: quickConnect.sourceName, typeId: t.id, typeName: t.name };
+											qcSearch = '';
+											qcTargets = new Set();
+										}
+									}}
+								>
+									<span class="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style="background:{t.color}"></span>
+									{t.name}
+								</button>
+							{/each}
+						</div>
+						<button class="mt-3 text-xs text-mut hover:text-ink" onclick={() => { quickConnect = { step: 1 }; qcSearch = ''; }}>‹ Zurück</button>
+					</div>
+
+				{:else if quickConnect.step === 3}
+					{@const qc3 = quickConnect}
+					<!-- Step 3: multi-select targets -->
+					<form bind:this={qcForm} method="POST" action="?/quickConnect" use:enhance={() => async ({ result, update }) => {
+						if (result.type === 'failure') {
+							qcError = (result.data as any)?.quickConnectError ?? 'Fehler';
+						} else {
+							closeQuickConnect();
+							await update();
+						}
+					}}>
+						<input type="hidden" name="sourceId" value={qc3.sourceId} />
+						<input type="hidden" name="typeId" value={qc3.typeId} />
+						{#each qcTargets as tid}
+							<input type="hidden" name="targetId" value={tid} />
+						{/each}
+
+						<div class="p-3">
+							<p class="mb-2 text-[11px] text-mut">
+								<b class="text-ink">{qc3.sourceName}</b>
+								<span class="mx-1">›</span>
+								<span class="inline-flex items-center gap-1"><span class="inline-block h-2 w-2 rounded-full" style="background:{data.types.find(t=>t.id===qc3.typeId)?.color}"></span>{qc3.typeName}</span>
+								<span class="mx-1">›</span>
+								{qcTargets.size} gewählt
+							</p>
+							<input
+								bind:this={qcInput3}
+								bind:value={qcSearch}
+								placeholder="Personen filtern…"
+								class="inp w-full text-sm"
+								aria-label="Zielpersonen filtern"
+								onkeydown={(e) => {
+									if (e.key === 'ArrowDown') { e.preventDefault(); qcActiveIdx = navIdx(qcActiveIdx, qcFilteredPersons.length, 1); scrollActive(qcList3El, qcActiveIdx); return; }
+									if (e.key === 'ArrowUp') { e.preventDefault(); qcActiveIdx = navIdx(qcActiveIdx, qcFilteredPersons.length, -1); scrollActive(qcList3El, qcActiveIdx); return; }
+									if (e.key === ' ') { e.preventDefault(); const p = qcActiveIdx >= 0 ? qcFilteredPersons[qcActiveIdx] : qcFilteredPersons[0]; if (p) { const next = new Set(qcTargets); if (next.has(p.id)) next.delete(p.id); else next.add(p.id); qcTargets = next; } return; }
+									if (e.key === 'Enter') { e.preventDefault(); if (qcTargets.size > 0) qcForm?.requestSubmit(); return; }
+									if (e.key === 'Backspace' && qcSearch === '' && qc3) {
+										e.preventDefault();
+										quickConnect = { step: 2, sourceId: qc3.sourceId, sourceName: qc3.sourceName };
+										qcSearch = '';
+									}
+								}}
+							/>
+						</div>
+						<div bind:this={qcList3El} class="max-h-56 overflow-y-auto border-t border-line">
+							{#each qcFilteredPersons as p, idx}
+								<label class="flex cursor-pointer items-center gap-3 border-b border-line px-4 py-2 last:border-0 hover:bg-bg {idx === qcActiveIdx ? 'bg-accent/10' : ''}">
+									<input
+										type="checkbox"
+										checked={qcTargets.has(p.id)}
+										onchange={(e) => {
+											const next = new Set(qcTargets);
+											if ((e.target as HTMLInputElement).checked) next.add(p.id); else next.delete(p.id);
+											qcTargets = next;
+										}}
+										class="accent-accent"
+									/>
+								<span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-line bg-bg bg-cover bg-center text-[10px] text-mut" style={p.image ? `background-image:url('${p.image}')` : ''}>{p.image ? '' : p.name[0]}</span>
+									<span class="flex-1 text-sm">{p.name}</span>
+									<span class="text-xs text-mut">{p.city ?? '–'}</span>
+								</label>
+							{:else}
+								<p class="px-4 py-3 text-sm text-mut">Keine Person gefunden.</p>
+							{/each}
+						</div>
+
+						{#if qcError}
+							<p class="px-4 py-2 text-sm text-warn">{qcError}</p>
+						{/if}
+
+						<div class="flex items-center justify-between border-t border-line p-3">
+							<button type="button" class="text-xs text-mut hover:text-ink" onclick={() => {
+								if (quickConnect?.step === 3) quickConnect = { step: 2, sourceId: quickConnect.sourceId, sourceName: quickConnect.sourceName };
+								qcSearch = '';
+							}}>‹ Zurück</button>
+							<button class="btn btn-primary btn-sm" disabled={qcTargets.size === 0}>
+								{qcTargets.size} Verbindung{qcTargets.size !== 1 ? 'en' : ''} anlegen
+							</button>
+						</div>
+					</form>
+				{/if}
 			</div>
 		</div>
 	{/if}
@@ -906,6 +1506,10 @@
 		white-space: nowrap;
 		font-family: system-ui, sans-serif;
 	}
+
+	.search-results::-webkit-scrollbar { width: 4px; }
+	.search-results::-webkit-scrollbar-track { background: transparent; }
+	.search-results::-webkit-scrollbar-thumb { background: rgba(120, 158, 72, 0.45); border-radius: 2px; }
 
 	/* Glass panels: semi-transparent so backdrop-blur shows the star field through */
 	:global(.graph-scene .backdrop-blur-md) {

@@ -18,14 +18,21 @@
 	let aiModel = $state(data.aiModel || 'anthropic/claude-sonnet-4.5');
 	let aiAutoApprove = $state(data.aiAutoApprove);
 	let aiPragmaticMode = $state(data.aiPragmaticMode);
+	let groqKey = $state('');
+	let groqKeySet = $state(data.groqKeySet);
 	let aiSaved = $state(false);
 
 	async function saveAi() {
 		if (!aiAutoApprove) aiPragmaticMode = false;
 		if (aiKey.trim()) {
-			await setSetting('openRouterApiKey', aiKey.trim()); // leer lassen = unverändert
+			await setSetting('openRouterApiKey', aiKey.trim());
 			aiKeySet = true;
 			aiKey = '';
+		}
+		if (groqKey.trim()) {
+			await setSetting('groqApiKey', groqKey.trim());
+			groqKeySet = true;
+			groqKey = '';
 		}
 		await setSetting('openRouterModel', aiModel.trim());
 		await setSetting('narrateAutoApprove', String(aiAutoApprove));
@@ -189,6 +196,16 @@
 						bind:value={aiKey}
 						autocomplete="off"
 						placeholder={aiKeySet ? '•••••••• — leer lassen = unverändert' : 'sk-or-…'}
+						class="inp"
+					/>
+				</label>
+				<label class="flex flex-col gap-1">
+					<span>Groq API-Key <span class="text-[11px] text-mut">(Spracherkennung Desktop)</span> {#if groqKeySet}<span class="text-mut">(gesetzt)</span>{/if}</span>
+					<input
+						type="password"
+						bind:value={groqKey}
+						autocomplete="off"
+						placeholder={groqKeySet ? '•••••••• — leer lassen = unverändert' : 'gsk_…'}
 						class="inp"
 					/>
 				</label>

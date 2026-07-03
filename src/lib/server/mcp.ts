@@ -238,6 +238,61 @@ export function registerMcpTools(server: McpServer): void {
 		}
 	);
 
+	server.registerTool(
+		'list_person_interests',
+		{
+			description:
+				'Sucht über alle Personen nach Interessen/Vorlieben (Film|Buch|Serie|Sonstiges) oder Essen/Allergien (Allergie|Unverträglichkeit|Diät). Filter sind case-insensitive Teilstrings, beide optional (leer = alles). Beantwortet Fragen wie "wer mag Film X" oder "wer hat Laktoseintoleranz".',
+			inputSchema: {
+				category: z.string().optional(),
+				title: z.string().optional()
+			}
+		},
+		async ({ category, title }) => {
+			const oid = await ownerId();
+			const rows = await db.personInterest.findMany({
+				where: {
+					person: { ownerId: oid },
+					...(category ? { category: { contains: category } } : {}),
+					...(title ? { title: { contains: title } } : {})
+				},
+				include: { person: { select: { id: true, name: true } } },
+				orderBy: [{ category: 'asc' }, { title: 'asc' }]
+			});
+			const body = rows
+				.map((r) => text(r.person.name, { personId: r.person.id, kategorie: r.category, titel: r.title, notiz: r.note ?? '' }))
+				.join('\n---\n');
+			return { content: [{ type: 'text' as const, text: `${rows.length} Treffer:\n${body || '(keine)'}` }] };
+		}
+	);
+
+	server.registerTool(
+		'list_person_gift_ideas',
+		{
+			description: 'Listet Geschenkideen, optional gefiltert nach Person (id) und/oder nur offene (noch nicht gekauft/erledigt).',
+			inputSchema: {
+				personId: z.number().int().optional(),
+				onlyOpen: z.boolean().default(false)
+			}
+		},
+		async ({ personId, onlyOpen }) => {
+			const oid = await ownerId();
+			const rows = await db.personGiftIdea.findMany({
+				where: {
+					person: { ownerId: oid },
+					...(personId != null ? { personId } : {}),
+					...(onlyOpen ? { isFulfilled: false } : {})
+				},
+				include: { person: { select: { id: true, name: true } } },
+				orderBy: { createdAt: 'desc' }
+			});
+			const body = rows
+				.map((r) => text(r.person.name, { personId: r.person.id, titel: r.title, notiz: r.note ?? '', erledigt: r.isFulfilled }))
+				.join('\n---\n');
+			return { content: [{ type: 'text' as const, text: `${rows.length} Geschenkideen:\n${body || '(keine)'}` }] };
+		}
+	);
+
 	// --- IMPORT (create-only: persons, connections, events, periods, journal) ---
 
 	server.registerTool(
@@ -320,7 +375,7 @@ export function registerMcpTools(server: McpServer): void {
 			}
 			if (Object.keys(data).length === 0) return err('Keine Felder zum Aktualisieren angegeben.');
 			await db.person.update({ where: { id: p.id }, data });
-			return ok(`Person „${p.name}" aktualisiert (Felder: ${Object.keys(data).join(', ')}).`);
+			return ok(`Person „${p.name}" (id ${p.id}) aktualisiert (Felder: ${Object.keys(data).join(', ')}).`);
 		}
 	);
 
@@ -514,7 +569,7 @@ export function registerMcpTools(server: McpServer): void {
 			const conn = await getOrCreateConnection(oid, aId, bId);
 			if (!conn.ok || conn.connectionId == null) return err(conn.message ?? conn.error ?? 'Verbindung fehlgeschlagen.');
 			const r = await addJournal(oid, conn.connectionId, parseTime(at), title, note ?? null);
-			return r.ok ? ok(`Journal-Eintrag „${title}" hinzugefügt.`) : err(r.message ?? r.error ?? 'Journal fehlgeschlagen.');
+			return r.ok ? ok(`Journal-Eintrag „${title}" hinzugefügt für Pair ${aId}–${bId}.`) : err(r.message ?? r.error ?? 'Journal fehlgeschlagen.');
 		}
 	);
 }

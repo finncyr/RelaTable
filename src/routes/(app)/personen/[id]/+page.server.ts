@@ -5,6 +5,9 @@ import { currentTypeName, colorForType, closenessSortKey } from '$lib/domain/rel
 import { formatImprecise } from '$lib/domain/time';
 import type { Actions, PageServerLoad } from './$types';
 
+// Trennt PersonInterest-Zeilen in "Vorlieben" vs. "Essen & Allergien" — keine eigene Tabelle nötig.
+const FOOD_CATEGORIES = ['Allergie', 'Unverträglichkeit', 'Diät'];
+
 async function getOwnedPerson(ownerId: number, id: number) {
 	const person = await db.person.findFirst({ where: { id, ownerId } });
 	if (!person) throw error(404, 'Person nicht gefunden');
@@ -18,7 +21,14 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 
 	const person = await db.person.findFirst({
 		where: { id, ownerId },
-		include: { location: true, socialAccounts: true, aliases: { orderBy: { alias: 'asc' } } }
+		include: {
+			location: true,
+			socialAccounts: true,
+			aliases: { orderBy: { alias: 'asc' } },
+			interests: { orderBy: [{ category: 'asc' }, { title: 'asc' }] },
+			giftIdeas: { orderBy: { createdAt: 'desc' } },
+			noteEntries: { orderBy: { createdAt: 'desc' } }
+		}
 	});
 	if (!person) throw error(404, 'Person nicht gefunden');
 
@@ -87,6 +97,10 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 			notes: person.notes
 		},
 		socialAccounts: person.socialAccounts,
+		interests: person.interests.filter((i) => !FOOD_CATEGORIES.includes(i.category)),
+		foodNotes: person.interests.filter((i) => FOOD_CATEGORIES.includes(i.category)),
+		giftIdeas: person.giftIdeas,
+		personNotes: person.noteEntries,
 		relationships,
 		events,
 		dependencies: {
@@ -134,5 +148,96 @@ export const actions: Actions = {
 		const accountId = Number(data.get('accountId'));
 		await db.socialAccount.deleteMany({ where: { id: accountId, personId: id } });
 		return { accountDeleted: true };
+	},
+
+	addInterest: async ({ locals, params, request }) => {
+		const ownerId = locals.user!.id;
+		const id = Number(params.id);
+		await getOwnedPerson(ownerId, id);
+		const data = await request.formData();
+		const category = String(data.get('category') ?? '').trim();
+		const title = String(data.get('title') ?? '').trim();
+		const note = String(data.get('note') ?? '').trim();
+		if (!category || !title) return fail(400, { interestError: 'Kategorie und Titel erforderlich' });
+		await db.personInterest.create({ data: { personId: id, category, title, note: note || null } });
+		return { interestAdded: true };
+	},
+
+	deleteInterest: async ({ locals, params, request }) => {
+		const ownerId = locals.user!.id;
+		const id = Number(params.id);
+		await getOwnedPerson(ownerId, id);
+		const data = await request.formData();
+		const interestId = Number(data.get('interestId'));
+		await db.personInterest.deleteMany({ where: { id: interestId, personId: id } });
+		return { interestDeleted: true };
+	},
+
+	addGiftIdea: async ({ locals, params, request }) => {
+		const ownerId = locals.user!.id;
+		const id = Number(params.id);
+		await getOwnedPerson(ownerId, id);
+		const data = await request.formData();
+		const title = String(data.get('title') ?? '').trim();
+		const note = String(data.get('note') ?? '').trim();
+		if (!title) return fail(400, { giftError: 'Titel erforderlich' });
+		await db.personGiftIdea.create({ data: { personId: id, title, note: note || null } });
+		return { giftAdded: true };
+	},
+
+	toggleGiftIdea: async ({ locals, params, request }) => {
+		const ownerId = locals.user!.id;
+		const id = Number(params.id);
+		await getOwnedPerson(ownerId, id);
+		const data = await request.formData();
+		const giftIdeaId = Number(data.get('giftIdeaId'));
+		const gift = await db.personGiftIdea.findFirst({ where: { id: giftIdeaId, personId: id } });
+		if (!gift) return fail(404, { giftError: 'Geschenkidee nicht gefunden' });
+		await db.personGiftIdea.update({ where: { id: giftIdeaId }, data: { isFulfilled: !gift.isFulfilled } });
+		return { giftToggled: true };
+	},
+
+	deleteGiftIdea: async ({ locals, params, request }) => {
+		const ownerId = locals.user!.id;
+		const id = Number(params.id);
+		await getOwnedPerson(ownerId, id);
+		const data = await request.formData();
+		const giftIdeaId = Number(data.get('giftIdeaId'));
+		await db.personGiftIdea.deleteMany({ where: { id: giftIdeaId, personId: id } });
+		return { giftDeleted: true };
+	},
+
+	addNote: async ({ locals, params, request }) => {
+		const ownerId = locals.user!.id;
+		const id = Number(params.id);
+		await getOwnedPerson(ownerId, id);
+		const data = await request.formData();
+		const text = String(data.get('text') ?? '').trim();
+		const isChecklist = data.get('isChecklist') === 'on';
+		if (!text) return fail(400, { noteError: 'Text erforderlich' });
+		await db.personNote.create({ data: { personId: id, text, isChecklist } });
+		return { noteAdded: true };
+	},
+
+	toggleNote: async ({ locals, params, request }) => {
+		const ownerId = locals.user!.id;
+		const id = Number(params.id);
+		await getOwnedPerson(ownerId, id);
+		const data = await request.formData();
+		const noteId = Number(data.get('noteId'));
+		const note = await db.personNote.findFirst({ where: { id: noteId, personId: id } });
+		if (!note) return fail(404, { noteError: 'Notiz nicht gefunden' });
+		await db.personNote.update({ where: { id: noteId }, data: { isDone: !note.isDone } });
+		return { noteToggled: true };
+	},
+
+	deleteNote: async ({ locals, params, request }) => {
+		const ownerId = locals.user!.id;
+		const id = Number(params.id);
+		await getOwnedPerson(ownerId, id);
+		const data = await request.formData();
+		const noteId = Number(data.get('noteId'));
+		await db.personNote.deleteMany({ where: { id: noteId, personId: id } });
+		return { noteDeleted: true };
 	}
 };
