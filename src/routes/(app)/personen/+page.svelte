@@ -63,6 +63,9 @@
 
 <Topbar title="Personen" subtitle={String(data.total)}>
 	<button class="btn btn-sm" onclick={toggleSort}>Name {data.sort === 'asc' ? '↑' : '↓'}</button>
+	<button class="btn btn-sm {selectMode ? 'bg-accent/20 text-ink' : ''}" onclick={toggleSelectMode}>
+		{selectMode ? 'Auswahl beenden' : 'Mehrfachauswahl'}
+	</button>
 	<a class="btn btn-primary btn-sm" href="/personen/neu">+ Neue Person</a>
 </Topbar>
 
