@@ -15,6 +15,15 @@
 	let engine = $state<'cytoscape' | 'forcegraph'>(
 		browser ? ((localStorage.getItem('graph.engine') as 'forcegraph' | null) ?? 'cytoscape') : 'cytoscape'
 	);
+	// Filter: Personen ohne jede Verbindung (degree 0) ausblenden.
+	let hideIsolated = $state(browser ? localStorage.getItem('graph.hideIsolated') === '1' : false);
+	function visibleNodes() {
+		return hideIsolated ? data.graph.nodes.filter((n) => n.degree > 0) : data.graph.nodes;
+	}
+	function toggleHideIsolated() {
+		hideIsolated = !hideIsolated;
+		localStorage.setItem('graph.hideIsolated', hideIsolated ? '1' : '0');
+	}
 	const basePos = new Map<string, { x: number; y: number }>(); // layout positions, restored before each focus
 	let layoutName = $state('circle');
 	let panel = $state<null | { id: number; name: string; city: string | null; degree: number; x: number; y: number }>(null);
@@ -146,7 +155,7 @@
 	}
 
 	function buildElements() {
-		const nodes = data.graph.nodes.map((n) => ({
+		const nodes = visibleNodes().map((n) => ({
 			data: { id: String(n.id), name: n.name, aliases: n.aliases, image: n.image, degree: n.degree, isolated: n.degree === 0 }
 		}));
 		const edges = data.graph.edges.map((e) => ({
@@ -375,7 +384,9 @@
 		return (
 			data.graph.nodes.map((n) => `${n.id}:${n.name}:${n.aliases.join('|')}:${n.image}:${n.degree}`).join(',') +
 			'|' +
-			data.graph.edges.map((e) => `${e.source}-${e.target}-${e.color}`).join(',')
+			data.graph.edges.map((e) => `${e.source}-${e.target}-${e.color}`).join(',') +
+			'|' +
+			hideIsolated
 		);
 	}
 
@@ -409,7 +420,7 @@
 
 	function buildFgData() {
 		return {
-			nodes: data.graph.nodes.map((n) => ({ id: n.id, name: n.name, val: Math.max(1, n.degree), img: n.image })),
+			nodes: visibleNodes().map((n) => ({ id: n.id, name: n.name, val: Math.max(1, n.degree), img: n.image })),
 			links: data.graph.edges.map((e) => ({ source: e.source, target: e.target, color: e.color }))
 		};
 	}
@@ -724,6 +735,11 @@
 						onclick={() => setEngine('forcegraph')}
 					>Force</button>
 				</div>
+				<button
+					class="rounded border border-line px-2 py-1 text-xs transition-colors {hideIsolated ? 'bg-accent/20 text-ink' : 'text-mut hover:text-ink'}"
+					onclick={toggleHideIsolated}
+					title="Personen ohne jede Beziehung ausblenden"
+				>Isolierte ausblenden</button>
 			</div>
 		</Topbar>
 	{/if}

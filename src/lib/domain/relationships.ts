@@ -81,7 +81,25 @@ export interface RelType {
 	rank: number | null;
 	isClosenessLevel: boolean;
 	isContinuous: boolean;
+	color?: string | null;
 }
+
+// Namen, die von der Domain-Logik selbst (V-1..V-8, Prioritäten, Aliase) als Schlüssel
+// verwendet werden. Diese dürfen NICHT umbenannt werden, da sonst Kernregeln
+// (z.B. Romantik-Blockade, Nähegrad-Leiter, automatische Bekanntschaft) stillschweigend
+// brechen würden. Farbe/Aktiv-Status dürfen für diese Typen dennoch bearbeitet werden.
+export const PROTECTED_TYPE_NAMES = [
+	'Bekanntschaft',
+	'Freundschaft',
+	'Enge Freundschaft',
+	'Romantik',
+	'Freundschaft Plus',
+	'Ex-Partner/in'
+] as const;
+
+// "Kontext" wird an einer Stelle namentlich referenziert (Schnellauswahl auf der
+// Paar-Seite) — eine Umbenennung würde diese Funktion stillschweigend leeren.
+export const PROTECTED_CATEGORY_NAMES = ['Kontext'] as const;
 
 export interface Period {
 	id?: number;
@@ -148,9 +166,21 @@ export function currentTypeName(periods: Period[], types: RelType[]): string | n
 	return actives[0];
 }
 
-export function colorForType(name: string | null): string {
+/**
+ * Farbe für die Anzeige (Graph-Kanten, Badges). Die in der DB gepflegte Farbe
+ * (RelationshipType.color, in den Einstellungen editierbar) hat Vorrang; ohne
+ * gespeicherte Farbe greift die historische Standardpalette als Fallback.
+ */
+export function colorForType(name: string | null, dbColor?: string | null): string {
+	if (dbColor) return dbColor;
 	if (!name) return '#bbbbbb';
 	return TYPE_COLORS[name] ?? '#7a8a99'; // context types fall back to grey-blue
+}
+
+/** Komfort-Variante: sucht die gespeicherte Farbe des Typs anhand des Namens in `types`. */
+export function colorForTypeName(name: string | null, types: RelType[]): string {
+	const t = name ? types.find((x) => x.name === name) : undefined;
+	return colorForType(name, t?.color ?? null);
 }
 
 /**

@@ -1,8 +1,7 @@
 import { db } from '$lib/server/db';
 import { coordsFor } from '$lib/server/geo';
 import { formatImprecise, type TimeKind } from '$lib/domain/time';
-import { currentTypeName, colorForType, loadRelTypes, toPeriods } from '$lib/server/queries';
-import { TYPE_COLORS } from '$lib/domain/relationships';
+import { currentTypeName, colorForTypeName, loadRelTypes, toPeriods } from '$lib/server/queries';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -69,7 +68,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 				sourceId: connection.personLowId,
 				targetId: connection.personHighId,
 				typeName,
-				color: colorForType(typeName),
+				color: colorForTypeName(typeName, types),
 				from,
 				to
 			};
@@ -84,12 +83,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 		personMarkers,
 		eventMarkers,
 		connectionSegments,
-		connectionLegend: [
-			{ label: 'Bekanntschaft', color: TYPE_COLORS['Bekanntschaft'] },
-			{ label: 'Freundschaft', color: TYPE_COLORS['Freundschaft'] },
-			{ label: 'Enge Freundschaft', color: TYPE_COLORS['Enge Freundschaft'] },
-			{ label: 'Romantik', color: TYPE_COLORS['Romantik'] }
-		],
+		connectionLegend: ['Bekanntschaft', 'Freundschaft', 'Enge Freundschaft', 'Romantik'].map((label) => ({
+			label,
+			color: colorForTypeName(label, types)
+		})),
 		missing: { persons: missingPersons, events: missingEvents },
 		provider: process.env.PUBLIC_MAP_PROVIDER || 'leaflet'
 	};

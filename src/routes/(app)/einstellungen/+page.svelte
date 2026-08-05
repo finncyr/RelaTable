@@ -7,7 +7,10 @@
 
 	let theme = $state<Theme>(data.theme as Theme);
 	let hideSensitive = $state(data.hideSensitive);
-	let addingType = $state(false);
+	let addingTypeFor = $state<number | null>(null);
+	let editingTypeId = $state<number | null>(null);
+	let addingCategory = $state(false);
+	let editingCategoryId = $state<number | null>(null);
 	let addingEvent = $state(false);
 	let importJsonText = $state('');
 	let importMode = $state<'preview' | 'apply'>('preview');
@@ -76,22 +79,101 @@
 			<div class="min-w-[300px] flex-1">
 				<b class="text-[13px]">Kategorien &amp; Typen</b>
 				<div class="card mt-1.5 p-3 text-[13px]">
-					{#each data.byCategory as cat}
-						<div class="mb-2">
-							<div class="text-mut">{cat.name}</div>
-							<div>
-								{#each cat.types as t, i}{i > 0 ? ' · ' : ''}<span class={t.isActive ? '' : 'text-mut line-through'}>{t.name}</span>{/each}
+					{#each data.byCategory as cat (cat.id)}
+						<div class="mb-3">
+							<div class="flex items-center gap-1.5">
+								{#if editingCategoryId === cat.id}
+									<form
+										method="POST"
+										action="?/renameCategory"
+										use:enhance={() => async ({ update }) => { await update(); editingCategoryId = null; }}
+										class="flex flex-1 gap-1.5"
+									>
+										<input type="hidden" name="id" value={cat.id} />
+										<input name="name" class="inp inp-sm flex-1" value={cat.name} required />
+										<button class="btn btn-sm btn-primary">✓</button>
+										<button type="button" class="btn btn-sm" onclick={() => (editingCategoryId = null)}>✕</button>
+									</form>
+								{:else}
+									<span class="text-mut">{cat.name}</span>
+									{#if cat.protected}
+										<span class="text-[10px] text-mut" title="Systemkategorie – Name geschützt">🔒</span>
+									{:else}
+										<button class="text-[11px] text-mut underline" onclick={() => (editingCategoryId = cat.id)}>umbenennen</button>
+									{/if}
+								{/if}
 							</div>
+							{#if form?.categoryError && editingCategoryId === cat.id}<p class="mt-0.5 text-[11px] text-warn">{form.categoryError}</p>{/if}
+							<div class="mt-1 flex flex-col gap-1">
+								{#each cat.types as t (t.id)}
+									<div class="flex items-center gap-1.5">
+										<form method="POST" action="?/updateTypeColor" use:enhance style="display:contents">
+											<input type="hidden" name="id" value={t.id} />
+											<input
+												type="color"
+												name="color"
+												value={t.color}
+												onchange={(e) => e.currentTarget.form?.requestSubmit()}
+												class="h-5 w-7 shrink-0 cursor-pointer rounded border border-line bg-transparent p-0"
+												title="Farbe ändern"
+											/>
+										</form>
+										{#if editingTypeId === t.id}
+											<form
+												method="POST"
+												action="?/renameType"
+												use:enhance={() => async ({ update }) => { await update(); editingTypeId = null; }}
+												class="flex flex-1 gap-1.5"
+											>
+												<input type="hidden" name="id" value={t.id} />
+												<input name="name" class="inp inp-sm flex-1" value={t.name} required />
+												<button class="btn btn-sm btn-primary">✓</button>
+												<button type="button" class="btn btn-sm" onclick={() => (editingTypeId = null)}>✕</button>
+											</form>
+										{:else}
+											<span class={t.isActive ? 'flex-1' : 'flex-1 text-mut line-through'}>{t.name}</span>
+											{#if t.protected}
+												<span class="text-[10px] text-mut" title="Systemtyp – Name geschützt">🔒</span>
+											{:else}
+												<button class="text-[11px] text-mut underline" onclick={() => (editingTypeId = t.id)}>umbenennen</button>
+											{/if}
+											<form method="POST" action="?/toggleTypeActive" use:enhance>
+												<input type="hidden" name="id" value={t.id} />
+												<button class="text-[11px] text-mut underline">{t.isActive ? 'deaktivieren' : 'aktivieren'}</button>
+											</form>
+										{/if}
+									</div>
+									{#if form?.typeError && editingTypeId === t.id}<p class="text-[11px] text-warn">{form.typeError}</p>{/if}
+								{/each}
+							</div>
+							{#if addingTypeFor === cat.id}
+								<form
+									method="POST"
+									action="?/addType"
+									use:enhance={() => async ({ update }) => { await update(); addingTypeFor = null; }}
+									class="mt-1.5 flex items-center gap-1.5"
+								>
+									<input type="hidden" name="categoryId" value={cat.id} />
+									<input type="color" name="color" value="#7a8a99" class="h-6 w-8 shrink-0 cursor-pointer rounded border border-line bg-transparent p-0" />
+									<input name="name" class="inp inp-sm flex-1" placeholder="Neuer Typ" required />
+									<button class="btn btn-sm btn-primary">+</button>
+									<button type="button" class="btn btn-sm" onclick={() => (addingTypeFor = null)}>✕</button>
+								</form>
+								{#if form?.typeError && addingTypeFor === cat.id}<p class="mt-1 text-[11px] text-warn">{form.typeError}</p>{/if}
+							{:else}
+								<button class="btn btn-sm mt-1.5" onclick={() => (addingTypeFor = cat.id)}>+ Typ</button>
+							{/if}
 						</div>
 					{/each}
-					{#if addingType}
-						<form method="POST" action="?/addContextType" use:enhance={() => async ({ update }) => { await update(); addingType = false; }} class="mt-2 flex gap-2">
-							<input name="name" class="inp" placeholder="Neuer Kontext-Typ" required />
+					{#if addingCategory}
+						<form method="POST" action="?/addCategory" use:enhance={() => async ({ update }) => { await update(); addingCategory = false; }} class="mt-2 flex gap-2">
+							<input name="name" class="inp" placeholder="Neue Kategorie" required />
 							<button class="btn btn-sm btn-primary">Anlegen</button>
+							<button type="button" class="btn btn-sm" onclick={() => (addingCategory = false)}>Abbrechen</button>
 						</form>
-						{#if form?.typeError}<p class="mt-1 text-[11px] text-warn">{form.typeError}</p>{/if}
+						{#if form?.categoryError && addingCategory}<p class="mt-1 text-[11px] text-warn">{form.categoryError}</p>{/if}
 					{:else}
-						<button class="btn btn-sm mt-1" onclick={() => (addingType = true)}>+ Kontext-Typ</button>
+						<button class="btn btn-sm mt-1" onclick={() => (addingCategory = true)}>+ Kategorie</button>
 					{/if}
 				</div>
 			</div>

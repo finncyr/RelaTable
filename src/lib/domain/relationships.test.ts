@@ -8,6 +8,10 @@ import {
 	validateEndRomance,
 	closenessSortKey,
 	normalizeRelationshipTypeName,
+	colorForType,
+	colorForTypeName,
+	PROTECTED_TYPE_NAMES,
+	PROTECTED_CATEGORY_NAMES,
 	type RelType,
 	type Period
 } from './relationships';
@@ -118,5 +122,43 @@ describe('relationship type phrase normalization', () => {
 	it('keeps exact canonical names intact', () => {
 		expect(normalizeRelationshipTypeName('Freundschaft')).toBe('Freundschaft');
 		expect(normalizeRelationshipTypeName('Enge Freundschaft')).toBe('Enge Freundschaft');
+	});
+});
+
+describe('editable type colors (Einstellungen)', () => {
+	it('prefers a DB-stored color over the hardcoded fallback map', () => {
+		expect(colorForType('Freundschaft', '#123456')).toBe('#123456');
+	});
+
+	it('falls back to the hardcoded map when no DB color is set', () => {
+		expect(colorForType('Freundschaft', null)).toBe(colorForType('Freundschaft'));
+		expect(colorForType('Freundschaft', undefined)).toBe(colorForType('Freundschaft'));
+	});
+
+	it('colorForTypeName looks the type up by name and uses its stored color', () => {
+		const withColor: RelType[] = [{ ...T.cosplay, color: '#abcdef' }];
+		expect(colorForTypeName('Cosplay', withColor)).toBe('#abcdef');
+	});
+
+	it('colorForTypeName falls back to the hardcoded map for unknown or colorless types', () => {
+		expect(colorForTypeName('Cosplay', types)).toBe(colorForType('Cosplay'));
+		expect(colorForTypeName('Unbekannt', types)).toBe(colorForType('Unbekannt'));
+	});
+});
+
+describe('protected names (Kategorien & Typen bearbeitbar)', () => {
+	it('lists exactly the six domain-critical relationship types', () => {
+		expect(PROTECTED_TYPE_NAMES).toEqual([
+			'Bekanntschaft',
+			'Freundschaft',
+			'Enge Freundschaft',
+			'Romantik',
+			'Freundschaft Plus',
+			'Ex-Partner/in'
+		]);
+	});
+
+	it('protects the "Kontext" category name (referenced by string elsewhere)', () => {
+		expect(PROTECTED_CATEGORY_NAMES).toEqual(['Kontext']);
 	});
 });

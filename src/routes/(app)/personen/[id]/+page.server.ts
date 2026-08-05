@@ -1,7 +1,7 @@
 import { error, fail, redirect } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { loadRelTypes, toPeriods } from '$lib/server/queries';
-import { currentTypeName, colorForType, closenessSortKey } from '$lib/domain/relationships';
+import { currentTypeName, colorForTypeName, closenessSortKey } from '$lib/domain/relationships';
 import { formatImprecise } from '$lib/domain/time';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -52,7 +52,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 					image: other.profileImagePath ? `/uploads/${other.profileImagePath}` : other.profileImageUrl
 				},
 				typeName,
-				color: colorForType(typeName),
+				color: colorForTypeName(typeName, types),
 				sortKey: closenessSortKey(periods, types)
 			};
 		})

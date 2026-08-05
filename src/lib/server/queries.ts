@@ -2,6 +2,7 @@ import { db } from './db';
 import {
 	currentTypeName,
 	colorForType,
+	colorForTypeName,
 	closenessSortKey,
 	canonicalPair,
 	type RelType,
@@ -16,7 +17,8 @@ export async function loadRelTypes(): Promise<RelType[]> {
 		categoryName: t.category.name,
 		rank: t.rank,
 		isClosenessLevel: t.isClosenessLevel,
-		isContinuous: t.isContinuous
+		isContinuous: t.isContinuous,
+		color: t.color
 	}));
 }
 
@@ -61,7 +63,7 @@ export async function loadGraph(ownerId: number): Promise<{ nodes: GraphNode[]; 
 			source: c.personLowId,
 			target: c.personHighId,
 			typeName,
-			color: colorForType(typeName)
+			color: colorForTypeName(typeName, types)
 		};
 	});
 
@@ -99,4 +101,4 @@ export async function findConnection(ownerId: number, a: number, b: number) {
 	});
 }
 
-export { currentTypeName, colorForType, closenessSortKey, toPeriods };
+export { currentTypeName, colorForType, colorForTypeName, closenessSortKey, toPeriods };

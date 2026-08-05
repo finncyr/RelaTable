@@ -1,8 +1,10 @@
 import { db } from './db';
 import { loadRelTypes } from './queries';
 import {
+	activeCloseness,
 	canonicalPair,
 	evaluateStartType,
+	hasActiveRomance,
 	validateEndRomance,
 	type Period
 } from '$lib/domain/relationships';
@@ -142,6 +144,59 @@ export async function endRomance(
 		}
 	});
 	return { ok: true, connectionId };
+}
+
+/**
+ * Auto-Bekanntschaft (AC-Event-Teilnahme): wenn zwei Personen gemeinsam an einem
+ * Ereignis teilnehmen und noch KEINE aktive Nähegrad-Stufe zwischen ihnen besteht
+ * (und keine aktive Romantik, die einen Nähegrad ohnehin blockiert), wird
+ * automatisch "Bekanntschaft" gestartet. Ein bereits vorhandener Nähegrad
+ * (auch Bekanntschaft selbst) wird nie überschrieben oder herabgestuft.
+ * Best-effort + idempotent — wirft nie, damit eine Ereignis-Speicherung nicht daran scheitert.
+ */
+export async function ensureAcquaintance(connectionId: number, time: ParsedImprecise): Promise<void> {
+	const types = await loadRelTypes();
+	const bekanntschaft = types.find((t) => t.name === 'Bekanntschaft');
+	if (!bekanntschaft) return; // Referenzdaten fehlen — nichts zu tun
+
+	const periods = await activePeriodsFor(connectionId);
+	if (activeCloseness(periods, types) || hasActiveRomance(periods, types)) return; // schon ein Status / durch Romantik blockiert
+
+	await db.$transaction(async (tx) => {
+		// Zwischen Laden und Schreiben könnte parallel bereits ein Status gesetzt worden sein — Race-Guard.
+		const stillNone = await tx.connectionRelationshipPeriod.findFirst({
+			where: { connectionId, validTo: null, relationshipType: { isClosenessLevel: true } }
+		});
+		if (stillNone) return;
+		await tx.connectionRelationshipPeriod.create({
+			data: { connectionId, relationshipTypeId: bekanntschaft.id, ...fromFields(time) }
+		});
+		await tx.relationshipChangeLog.create({
+			data: { connectionId, action: 'start', relationshipTypeId: bekanntschaft.id, detail: 'automatisch aus gemeinsamer Ereignisteilnahme' }
+		});
+	});
+}
+
+/**
+ * Für alle Personenpaare eines Ereignisses (Verbindung finden/anlegen +
+ * ensureAcquaintance). Best-effort — einzelne Fehler blockieren die anderen Paare nicht.
+ */
+export async function ensureAcquaintanceForParticipants(
+	ownerId: number,
+	personIds: number[],
+	time: ParsedImprecise
+): Promise<void> {
+	const ids = [...new Set(personIds)];
+	for (let i = 0; i < ids.length; i += 1) {
+		for (let j = i + 1; j < ids.length; j += 1) {
+			try {
+				const conn = await getOrCreateConnection(ownerId, ids[i], ids[j]);
+				if (conn.ok && conn.connectionId) await ensureAcquaintance(conn.connectionId, time);
+			} catch {
+				// best-effort — ein Paar darf die übrigen nicht blockieren
+			}
+		}
+	}
 }
 
 export async function addJournal(
