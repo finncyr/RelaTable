@@ -17,6 +17,9 @@ vite.config.js.timestamp-*
 # Local tooling
 .claude/
 .nimbalyst/
+nimbalyst-local/
+.impeccable/
+.directory
 
 # Test artifacts
 /test-results

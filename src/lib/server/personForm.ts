@@ -13,6 +13,7 @@ const schema = z.object({
 	orientation: z.enum(ORIENTATIONS).optional().or(z.literal('')),
 	city: z.string().trim().optional(),
 	notes: z.string().trim().optional(),
+	isCosplayer: z.enum(['true', '']).optional(),
 	imageMode: z.enum(['upload', 'url']).optional(),
 	profileImageUrl: z.string().trim().optional()
 });
@@ -31,6 +32,7 @@ export interface PersonFormResult {
 		orientation: string;
 		locationId: number | null;
 		notes: string | null;
+		isCosplayer: boolean;
 		profileImagePath: string | null;
 		profileImageUrl: string | null;
 	};
@@ -46,6 +48,7 @@ export async function processPersonForm(formData: FormData): Promise<PersonFormR
 		orientation: String(formData.get('orientation') ?? ''),
 		city: String(formData.get('city') ?? ''),
 		notes: String(formData.get('notes') ?? ''),
+		isCosplayer: String(formData.get('isCosplayer') ?? ''),
 		imageMode: String(formData.get('imageMode') ?? 'upload'),
 		profileImageUrl: String(formData.get('profileImageUrl') ?? '')
 	};
@@ -109,6 +112,7 @@ export async function processPersonForm(formData: FormData): Promise<PersonFormR
 			orientation: v.orientation || 'unbekannt',
 			locationId,
 			notes: v.notes || null,
+			isCosplayer: v.isCosplayer === 'true',
 			profileImagePath,
 			profileImageUrl
 		}

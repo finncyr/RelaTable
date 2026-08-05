@@ -6,6 +6,7 @@ import {
 	evaluateStartType,
 	hasActiveRomance,
 	validateEndRomance,
+	inverseFamilyRoleName,
 	type Period
 } from '$lib/domain/relationships';
 import type { ParsedImprecise } from './impreciseTime';
@@ -24,9 +25,9 @@ async function ownsConnection(ownerId: number, connectionId: number) {
 async function activePeriodsFor(connectionId: number): Promise<(Period & { id: number })[]> {
 	const rows = await db.connectionRelationshipPeriod.findMany({
 		where: { connectionId },
-		select: { id: true, relationshipTypeId: true, validFrom: true, validTo: true }
+		select: { id: true, relationshipTypeId: true, validFrom: true, validTo: true, personId: true }
 	});
-	return rows.map((r) => ({ id: r.id, relationshipTypeId: r.relationshipTypeId, validFrom: r.validFrom, validTo: r.validTo }));
+	return rows.map((r) => ({ id: r.id, relationshipTypeId: r.relationshipTypeId, validFrom: r.validFrom, validTo: r.validTo, personId: r.personId }));
 }
 
 function fromFields(t: ParsedImprecise) {
@@ -68,12 +69,13 @@ export async function startType(
 	connectionId: number,
 	typeId: number,
 	time: ParsedImprecise,
-	note?: string | null
+	note?: string | null,
+	personId?: number | null
 ): Promise<ServiceResult> {
 	if (!(await ownsConnection(ownerId, connectionId))) return { ok: false, error: 'E-NOT-FOUND' };
 	const [periods, types] = await Promise.all([activePeriodsFor(connectionId), loadRelTypes()]);
 
-	const evalResult = evaluateStartType(typeId, periods, types);
+	const evalResult = evaluateStartType(typeId, periods, types, personId);
 	if (!evalResult.allowed) return { ok: false, error: evalResult.error, message: evalResult.message };
 
 	await db.$transaction(async (tx) => {
@@ -86,10 +88,79 @@ export async function startType(
 			}
 		}
 		await tx.connectionRelationshipPeriod.create({
-			data: { connectionId, relationshipTypeId: typeId, ...fromFields(time), note: note || null }
+			data: { connectionId, relationshipTypeId: typeId, ...fromFields(time), note: note || null, personId: personId ?? null }
 		});
 		await tx.relationshipChangeLog.create({ data: { connectionId, action: 'start', relationshipTypeId: typeId } });
 	});
+
+	return { ok: true, connectionId };
+}
+
+/**
+ * Start a Familie-Rolle for one person and auto-derive the other person's
+ * reciprocal role from their gender (V-9, e.g. Onkel <-> Neffe/Nichte). Leaves
+ * the other side untouched if it already holds a family role (don't clobber a
+ * manual choice).
+ */
+export async function startFamilyType(
+	ownerId: number,
+	connectionId: number,
+	typeId: number,
+	personId: number,
+	time: ParsedImprecise
+): Promise<ServiceResult> {
+	const conn = await db.connection.findFirst({ where: { id: connectionId, ownerId } });
+	if (!conn) return { ok: false, error: 'E-NOT-FOUND' };
+	const otherPersonId = personId === conn.personLowId ? conn.personHighId : conn.personLowId;
+
+	const res = await startType(ownerId, connectionId, typeId, time, null, personId);
+	if (!res.ok) return res;
+
+	const [type, otherPerson, periods, types] = await Promise.all([
+		db.relationshipType.findUnique({ where: { id: typeId } }),
+		db.person.findUnique({ where: { id: otherPersonId } }),
+		activePeriodsFor(connectionId),
+		loadRelTypes()
+	]);
+	if (!type || !otherPerson) return res;
+
+	const otherAlreadyHasFamily = periods.some(
+		(p) => p.validTo === null && p.personId === otherPersonId && types.find((t) => t.id === p.relationshipTypeId)?.categoryName === 'Familie'
+	);
+	if (otherAlreadyHasFamily) return res;
+
+	const inverseName = inverseFamilyRoleName(type.name, otherPerson.gender);
+	const inverseType = inverseName ? types.find((t) => t.name === inverseName) : null;
+	if (inverseType) await startType(ownerId, connectionId, inverseType.id, time, null, otherPersonId);
+
+	return res;
+}
+
+/**
+ * End a Familie-Rolle for one person and also end the other person's reciprocal
+ * active family period (mirrors startFamilyType's cascade) — otherwise the
+ * connection still counts as "hasActiveFamily" and blocks Nähegrad selection.
+ */
+export async function endFamilyType(
+	ownerId: number,
+	connectionId: number,
+	typeId: number,
+	personId: number,
+	time: ParsedImprecise
+): Promise<ServiceResult> {
+	const conn = await db.connection.findFirst({ where: { id: connectionId, ownerId } });
+	if (!conn) return { ok: false, error: 'E-NOT-FOUND' };
+	const otherPersonId = personId === conn.personLowId ? conn.personHighId : conn.personLowId;
+	const [periods, types] = await Promise.all([activePeriodsFor(connectionId), loadRelTypes()]);
+
+	const period = periods.find((p) => p.relationshipTypeId === typeId && p.personId === personId && p.validTo === null);
+	if (!period) return { ok: true, connectionId };
+	await endPeriod(ownerId, period.id, time);
+
+	const otherActive = periods.find(
+		(p) => p.validTo === null && p.personId === otherPersonId && types.find((t) => t.id === p.relationshipTypeId)?.categoryName === 'Familie'
+	);
+	if (otherActive) await endPeriod(ownerId, otherActive.id, time);
 
 	return { ok: true, connectionId };
 }
@@ -144,59 +215,6 @@ export async function endRomance(
 		}
 	});
 	return { ok: true, connectionId };
-}
-
-/**
- * Auto-Bekanntschaft (AC-Event-Teilnahme): wenn zwei Personen gemeinsam an einem
- * Ereignis teilnehmen und noch KEINE aktive Nähegrad-Stufe zwischen ihnen besteht
- * (und keine aktive Romantik, die einen Nähegrad ohnehin blockiert), wird
- * automatisch "Bekanntschaft" gestartet. Ein bereits vorhandener Nähegrad
- * (auch Bekanntschaft selbst) wird nie überschrieben oder herabgestuft.
- * Best-effort + idempotent — wirft nie, damit eine Ereignis-Speicherung nicht daran scheitert.
- */
-export async function ensureAcquaintance(connectionId: number, time: ParsedImprecise): Promise<void> {
-	const types = await loadRelTypes();
-	const bekanntschaft = types.find((t) => t.name === 'Bekanntschaft');
-	if (!bekanntschaft) return; // Referenzdaten fehlen — nichts zu tun
-
-	const periods = await activePeriodsFor(connectionId);
-	if (activeCloseness(periods, types) || hasActiveRomance(periods, types)) return; // schon ein Status / durch Romantik blockiert
-
-	await db.$transaction(async (tx) => {
-		// Zwischen Laden und Schreiben könnte parallel bereits ein Status gesetzt worden sein — Race-Guard.
-		const stillNone = await tx.connectionRelationshipPeriod.findFirst({
-			where: { connectionId, validTo: null, relationshipType: { isClosenessLevel: true } }
-		});
-		if (stillNone) return;
-		await tx.connectionRelationshipPeriod.create({
-			data: { connectionId, relationshipTypeId: bekanntschaft.id, ...fromFields(time) }
-		});
-		await tx.relationshipChangeLog.create({
-			data: { connectionId, action: 'start', relationshipTypeId: bekanntschaft.id, detail: 'automatisch aus gemeinsamer Ereignisteilnahme' }
-		});
-	});
-}
-
-/**
- * Für alle Personenpaare eines Ereignisses (Verbindung finden/anlegen +
- * ensureAcquaintance). Best-effort — einzelne Fehler blockieren die anderen Paare nicht.
- */
-export async function ensureAcquaintanceForParticipants(
-	ownerId: number,
-	personIds: number[],
-	time: ParsedImprecise
-): Promise<void> {
-	const ids = [...new Set(personIds)];
-	for (let i = 0; i < ids.length; i += 1) {
-		for (let j = i + 1; j < ids.length; j += 1) {
-			try {
-				const conn = await getOrCreateConnection(ownerId, ids[i], ids[j]);
-				if (conn.ok && conn.connectionId) await ensureAcquaintance(conn.connectionId, time);
-			} catch {
-				// best-effort — ein Paar darf die übrigen nicht blockieren
-			}
-		}
-	}
 }
 
 export async function addJournal(

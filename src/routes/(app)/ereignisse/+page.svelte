@@ -47,10 +47,10 @@
 	</div>
 
 	{#if visible.length > 0}
-		<ul class="flex flex-col gap-2">
-			{#each visible as e (e.id)}
-				<li>
-					<a href={`/ereignisse/${e.id}`} class="flex items-center gap-2.5 rounded-lg border border-line bg-card p-2.5 hover:bg-bg">
+		<ul class="stagger flex flex-col gap-2">
+			{#each visible as e, i (e.id)}
+				<li style="--i:{i}">
+					<a href={`/ereignisse/${e.id}`} class="lift flex items-center gap-2.5 rounded-xl border border-line bg-card p-2.5 hover:bg-bg">
 						<span class="flex h-8 w-8 flex-none items-center justify-center rounded-md border border-line bg-bg text-[15px]">{ICONS[e.typeName] ?? '★'}</span>
 						<span class="min-w-0 flex-1">
 							<b class="block truncate">{e.sensitive ? '🔒 ' : ''}{e.name}</b>

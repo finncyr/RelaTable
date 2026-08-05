@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import { onMount } from 'svelte';
 	import Topbar from '$lib/components/Topbar.svelte';
-	import { applyTheme, type Theme } from '$lib/theme';
+	import { applyThemeWithReveal, type Theme } from '$lib/theme';
+	import { toast } from '$lib/toast.svelte';
 
 	let { data, form } = $props();
 
@@ -21,20 +23,33 @@
 	let aiModel = $state(data.aiModel || 'anthropic/claude-sonnet-4.5');
 	let aiAutoApprove = $state(data.aiAutoApprove);
 	let aiPragmaticMode = $state(data.aiPragmaticMode);
-	let aiSaved = $state(false);
+	let groqKey = $state('');
+	let groqKeySet = $state(data.groqKeySet);
+
+	onMount(() => {
+		const sync = (event: Event) => {
+			theme = (event as CustomEvent<{ theme: Theme }>).detail.theme;
+		};
+		window.addEventListener('relatable:theme-change', sync);
+		return () => window.removeEventListener('relatable:theme-change', sync);
+	});
 
 	async function saveAi() {
 		if (!aiAutoApprove) aiPragmaticMode = false;
 		if (aiKey.trim()) {
-			await setSetting('openRouterApiKey', aiKey.trim()); // leer lassen = unverändert
+			await setSetting('openRouterApiKey', aiKey.trim());
 			aiKeySet = true;
 			aiKey = '';
+		}
+		if (groqKey.trim()) {
+			await setSetting('groqApiKey', groqKey.trim());
+			groqKeySet = true;
+			groqKey = '';
 		}
 		await setSetting('openRouterModel', aiModel.trim());
 		await setSetting('narrateAutoApprove', String(aiAutoApprove));
 		await setSetting('narratePragmaticMode', String(aiAutoApprove && aiPragmaticMode));
-		aiSaved = true;
-		setTimeout(() => (aiSaved = false), 2000);
+		toast('Einstellungen gespeichert');
 	}
 
 	const reportRows: { key: string; label: string }[] = [
@@ -57,9 +72,10 @@
 		}).catch(() => {});
 	}
 
-	function chooseTheme(t: Theme) {
+	function chooseTheme(t: Theme, e: MouseEvent) {
 		theme = t;
-		applyTheme(t);
+		// Circular reveal from the clicked button (Telegram-style).
+		applyThemeWithReveal(t, e.clientX, e.clientY);
 		setSetting('themePreference', t);
 	}
 	function toggleSensitive() {
@@ -79,72 +95,11 @@
 			<div class="min-w-[300px] flex-1">
 				<b class="text-[13px]">Kategorien &amp; Typen</b>
 				<div class="card mt-1.5 p-3 text-[13px]">
-					{#each data.byCategory as cat (cat.id)}
-						<div class="mb-3">
-							<div class="flex items-center gap-1.5">
-								{#if editingCategoryId === cat.id}
-									<form
-										method="POST"
-										action="?/renameCategory"
-										use:enhance={() => async ({ update }) => { await update(); editingCategoryId = null; }}
-										class="flex flex-1 gap-1.5"
-									>
-										<input type="hidden" name="id" value={cat.id} />
-										<input name="name" class="inp inp-sm flex-1" value={cat.name} required />
-										<button class="btn btn-sm btn-primary">✓</button>
-										<button type="button" class="btn btn-sm" onclick={() => (editingCategoryId = null)}>✕</button>
-									</form>
-								{:else}
-									<span class="text-mut">{cat.name}</span>
-									{#if cat.protected}
-										<span class="text-[10px] text-mut" title="Systemkategorie – Name geschützt">🔒</span>
-									{:else}
-										<button class="text-[11px] text-mut underline" onclick={() => (editingCategoryId = cat.id)}>umbenennen</button>
-									{/if}
-								{/if}
-							</div>
-							{#if form?.categoryError && editingCategoryId === cat.id}<p class="mt-0.5 text-[11px] text-warn">{form.categoryError}</p>{/if}
-							<div class="mt-1 flex flex-col gap-1">
-								{#each cat.types as t (t.id)}
-									<div class="flex items-center gap-1.5">
-										<form method="POST" action="?/updateTypeColor" use:enhance style="display:contents">
-											<input type="hidden" name="id" value={t.id} />
-											<input
-												type="color"
-												name="color"
-												value={t.color}
-												onchange={(e) => e.currentTarget.form?.requestSubmit()}
-												class="h-5 w-7 shrink-0 cursor-pointer rounded border border-line bg-transparent p-0"
-												title="Farbe ändern"
-											/>
-										</form>
-										{#if editingTypeId === t.id}
-											<form
-												method="POST"
-												action="?/renameType"
-												use:enhance={() => async ({ update }) => { await update(); editingTypeId = null; }}
-												class="flex flex-1 gap-1.5"
-											>
-												<input type="hidden" name="id" value={t.id} />
-												<input name="name" class="inp inp-sm flex-1" value={t.name} required />
-												<button class="btn btn-sm btn-primary">✓</button>
-												<button type="button" class="btn btn-sm" onclick={() => (editingTypeId = null)}>✕</button>
-											</form>
-										{:else}
-											<span class={t.isActive ? 'flex-1' : 'flex-1 text-mut line-through'}>{t.name}</span>
-											{#if t.protected}
-												<span class="text-[10px] text-mut" title="Systemtyp – Name geschützt">🔒</span>
-											{:else}
-												<button class="text-[11px] text-mut underline" onclick={() => (editingTypeId = t.id)}>umbenennen</button>
-											{/if}
-											<form method="POST" action="?/toggleTypeActive" use:enhance>
-												<input type="hidden" name="id" value={t.id} />
-												<button class="text-[11px] text-mut underline">{t.isActive ? 'deaktivieren' : 'aktivieren'}</button>
-											</form>
-										{/if}
-									</div>
-									{#if form?.typeError && editingTypeId === t.id}<p class="text-[11px] text-warn">{form.typeError}</p>{/if}
-								{/each}
+					{#each data.byCategory as cat}
+						<div class="mb-2">
+							<div class="text-mut">{cat.name}</div>
+							<div>
+								{#each cat.types as t, i}{i > 0 ? ' · ' : ''}<span class={t.isActive ? '' : 'text-mut line-through'}>{t.name}</span>{/each}
 							</div>
 							{#if addingTypeFor === cat.id}
 								<form
@@ -165,15 +120,14 @@
 							{/if}
 						</div>
 					{/each}
-					{#if addingCategory}
-						<form method="POST" action="?/addCategory" use:enhance={() => async ({ update }) => { await update(); addingCategory = false; }} class="mt-2 flex gap-2">
-							<input name="name" class="inp" placeholder="Neue Kategorie" required />
+					{#if addingType}
+						<form method="POST" action="?/addContextType" use:enhance={() => async ({ update }) => { await update(); addingType = false; }} class="mt-2 flex gap-2">
+							<input name="name" class="inp" placeholder="Neuer Kontext-Typ" required />
 							<button class="btn btn-sm btn-primary">Anlegen</button>
-							<button type="button" class="btn btn-sm" onclick={() => (addingCategory = false)}>Abbrechen</button>
 						</form>
-						{#if form?.categoryError && addingCategory}<p class="mt-1 text-[11px] text-warn">{form.categoryError}</p>{/if}
+						{#if form?.typeError}<p class="mt-1 text-[11px] text-warn">{form.typeError}</p>{/if}
 					{:else}
-						<button class="btn btn-sm mt-1" onclick={() => (addingCategory = true)}>+ Kategorie</button>
+						<button class="btn btn-sm mt-1" onclick={() => (addingType = true)}>+ Kontext-Typ</button>
 					{/if}
 				</div>
 			</div>
@@ -227,176 +181,86 @@
 					<p class="mt-1.5 text-[11px] text-mut">folgt System bis manuell gewählt (DEC-015)</p>
 				</div>
 
-				<b class="mt-2.5 block text-[13px]">Sensible Inhalte</b>
-				<div class="card mt-1.5 flex items-center justify-between p-3 text-[13px]">
-					<span>Standard verbergen</span>
-					<button
-						class="relative h-[18px] w-[34px] rounded-full {hideSensitive ? 'bg-[#3a6ea5]' : 'bg-line'}"
-						onclick={toggleSensitive}
-						aria-pressed={hideSensitive}
-						aria-label="Sensible Inhalte standardmäßig verbergen"
-					>
-						<span class="absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white transition-all {hideSensitive ? 'left-[18px]' : 'left-0.5'}"></span>
-					</button>
-				</div>
-			</div>
+					<details class="card group mt-4">
+						<summary class="flex min-h-12 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium"><span>Ausschlussregeln anzeigen</span><span class="text-mut transition-transform group-open:rotate-180">⌄</span></summary>
+						<div class="border-t border-line px-4 py-3 text-sm leading-7 text-mut">
+							{#each data.ruleText as r}<div>• {r}</div>{/each}
+							<div>• „Sex“ ist ein Ereignis und ändert den Beziehungsstatus nicht.</div>
+							<p class="mt-2 text-xs">Bereits verwendete Typen werden beim Entfernen deaktiviert, damit die Historie erhalten bleibt.</p>
+						</div>
+					</details>
+				</section>
 
-			<div class="min-w-[240px] flex-1">
-				<b class="text-[13px]">Backup / Restore</b>
-				<div class="card mt-1.5 p-3 text-[13px]">
-					<a class="btn btn-sm" href="/api/backup" download>Backup erstellen</a>
-					<span class="ml-1.5 text-[11px] text-mut">DB + Bilder als ein Paket</span>
-					<p class="mt-2 text-[11px] text-mut">Restore: Paket nach <code>data/</code> entpacken &amp; App neu starten. Niedrige Priorität (DEC-031).</p>
-				</div>
-				<b class="mt-2.5 block text-[13px]">Notion-Import</b>
-				<div class="card mt-1.5 p-3 text-[11px] text-mut">
-					Notion-Import erfolgt einmalig &amp; programmatisch: <code>npm run import:notion</code> (DEC-024/003).
-				</div>
-			</div>
-		</section>
-
-		<!-- KI / Erzählung (Mikrofon → OpenRouter) -->
-		<section>
-			<b class="text-[13px]">KI / Erzählung</b>
-			<div class="card mt-1.5 flex max-w-md flex-col gap-2 p-3 text-[13px]">
-				<p class="text-[11px] text-mut">
-					Für die Mikrofon-Erzählung im Graph. API-Key von
-					<a class="underline" href="https://openrouter.ai/keys" target="_blank" rel="noreferrer">openrouter.ai/keys</a>.
-					Der Key wird nur serverseitig genutzt und nie wieder angezeigt.
-				</p>
-				<label class="flex flex-col gap-1">
-					<span>OpenRouter API-Key {#if aiKeySet}<span class="text-mut">(gesetzt)</span>{/if}</span>
-					<input
-						type="password"
-						bind:value={aiKey}
-						autocomplete="off"
-						placeholder={aiKeySet ? '•••••••• — leer lassen = unverändert' : 'sk-or-…'}
-						class="inp"
-					/>
-				</label>
-				<label class="flex flex-col gap-1">
-					<span>Modell</span>
-					<!-- ponytail: echtes <select>. Neues Modell = eine <option>-Zeile. -->
-					<select bind:value={aiModel} class="inp">
-						<option value="z-ai/glm-5.2">GLM-5.2 (Zhipu — günstig, stark)</option>
-						<option value="moonshotai/kimi-k2.7-code">Kimi K2.7 Code (Moonshot)</option>
-						<option value="anthropic/claude-sonnet-4.5">Claude Sonnet 4.5 (Premium)</option>
-						{#if aiModel && !['z-ai/glm-5.2', 'moonshotai/kimi-k2.7-code', 'anthropic/claude-sonnet-4.5'].includes(aiModel)}
-							<option value={aiModel}>{aiModel} (eigene)</option>
-						{/if}
-					</select>
-				</label>
-				<label class="flex items-start gap-2">
-					<input
-						type="checkbox"
-						bind:checked={aiAutoApprove}
-						onchange={() => {
-							if (!aiAutoApprove) aiPragmaticMode = false;
-						}}
-						class="mt-0.5"
-					/>
-					<span>
-						Automatisch übernehmen
-						<span class="block text-[11px] text-mut">
-							An: Die KI legt Personen/Ereignisse direkt an. Aus (Standard): Sie fasst erst
-							zusammen, was sie anlegen würde, und fragt um Bestätigung.
-						</span>
-					</span>
-				</label>
-				<label class="flex items-start gap-2 {aiAutoApprove ? '' : 'opacity-55'}">
-					<input type="checkbox" bind:checked={aiPragmaticMode} disabled={!aiAutoApprove} class="mt-0.5" />
-					<span>
-						Ohne Rückfragen minimal anlegen
-						<span class="block text-[11px] text-mut">
-							Nur mit automatischer Übernahme: Die KI fragt fehlende Details nicht ab,
-							sondern legt sichere Mindestdaten an und lässt Unbekanntes leer.
-						</span>
-					</span>
-				</label>
-				<div class="flex items-center gap-2">
-					<button class="btn btn-sm btn-primary" onclick={saveAi}>Speichern</button>
-					{#if aiSaved}<span class="text-[11px] text-mut">✓ gespeichert</span>{/if}
-				</div>
-			</div>
-		</section>
-
-		<!-- Instagram-Import -->
-		<section>
-			<b class="text-[13px]">Instagram-Import</b>
-			<div class="card mt-1.5 flex items-center justify-between gap-3 p-3 text-[13px]">
-				<p class="text-[11px] text-mut">
-					Followings laden, an-/abwählen, auf vorhandene Personen zuordnen — Profilbild &amp; Instagram-Link werden befüllt.
-				</p>
-				<a href="/import/instagram" class="btn btn-sm flex-none">Öffnen</a>
-			</div>
-		</section>
-
-		<!-- JSON-Import (Erzählung → JSON) -->
-		<section>
-			<b class="text-[13px]">JSON-Import</b>
-			<div class="card mt-1.5 p-3 text-[13px]">
-				<p class="text-[11px] text-mut">
-					Personen, Verbindungen (mit Verlauf) und Ereignisse aus einer JSON-Struktur einpflegen. Mit „Vorschau" wird nichts
-					geschrieben – nur geprüft und gezählt. Erst „Importieren" schreibt in die Datenbank. Das passende JSON kann aus einer
-					Erzählung erzeugt werden (siehe <code>docs/import/</code>).
-				</p>
-				<form
-					method="POST"
-					action="?/importJson"
-					use:enhance={() => {
-						importing = true;
-						return async ({ update }) => {
-							await update({ reset: false });
-							importing = false;
-						};
-					}}
-					class="mt-2"
-				>
-					<textarea
-						name="json"
-						bind:value={importJsonText}
-						rows="8"
-						spellcheck="false"
-						class="inp w-full font-mono text-[12px]"
-						placeholder={'{\n  "persons": [ … ],\n  "connections": [ … ],\n  "events": [ … ]\n}'}
-					></textarea>
-					<input type="hidden" name="mode" value={importMode} />
-					<div class="mt-2 flex flex-wrap items-center gap-2">
-						<button class="btn btn-sm" disabled={importing} onclick={() => (importMode = 'preview')}>Vorschau</button>
-						<button class="btn btn-sm btn-primary" disabled={importing} onclick={() => (importMode = 'apply')}>Importieren</button>
-						{#if importing}<span class="text-[11px] text-mut">läuft …</span>{/if}
+				<section id="datenschutz" class="scroll-mt-4">
+					<div class="mb-4 flex items-end justify-between gap-3">
+						<div><h2 class="text-lg font-semibold">Datenschutz</h2><p class="mt-1 text-sm text-mut">Sensible Einträge beim Öffnen der App schützen.</p></div>
+						<span class="chip">{hideSensitive ? 'Standardmäßig verborgen' : 'Standardmäßig sichtbar'}</span>
 					</div>
-				</form>
+					<div class="card flex items-center justify-between gap-4 p-4">
+						<div><b class="text-sm">Sensible Inhalte verbergen</b><p class="mt-0.5 text-xs text-mut">Sie lassen sich in der jeweiligen Ansicht weiterhin gezielt einblenden.</p></div>
+						<button class="relative h-11 w-12 flex-none rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/55" onclick={toggleSensitive} aria-pressed={hideSensitive} aria-label="Sensible Inhalte standardmäßig verbergen">
+							<span class="absolute left-0 top-2 h-7 w-12 rounded-full transition-colors {hideSensitive ? 'bg-accent' : 'bg-line'}"><span class="absolute top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-all {hideSensitive ? 'left-6' : 'left-1'}"></span></span>
+						</button>
+					</div>
+				</section>
 
-				{#if form?.import}
-					{@const r = form.import as import('$lib/server/jsonImport').ImportResult}
-					<div class="mt-3 rounded-md border border-line p-2.5 text-[12px]">
-						{#if r.error}
-							<p class="text-warn">⚠ {r.error}</p>
-						{:else if r.report}
-							<p class="font-semibold">
-								{r.mode === 'apply' ? '✓ Importiert' : 'Vorschau'} — {r.mode === 'apply' ? 'in die Datenbank geschrieben' : 'nichts geschrieben'}
-							</p>
-							<div class="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 sm:grid-cols-3">
-								{#each reportRows as row}
-									<div class="flex justify-between gap-2">
-										<span class="text-mut">{row.label}</span>
-										<span class="tabular-nums">{r.report[row.key as keyof typeof r.report] ?? 0}</span>
-									</div>
-								{/each}
-							</div>
-							{#if r.mode === 'preview' && r.report.personsCreated + r.report.connectionsCreated + r.report.eventsCreated + r.report.periodsCreated > 0}
-								<p class="mt-2 text-[11px] text-mut">Sieht gut aus? Dann auf „Importieren" klicken.</p>
+				<section id="importe" class="scroll-mt-4">
+					<div class="mb-4"><h2 class="text-lg font-semibold">Importe</h2><p class="mt-1 text-sm text-mut">Daten erst prüfen und dann kontrolliert übernehmen.</p></div>
+					<div class="grid gap-4 sm:grid-cols-2">
+						<div class="card flex flex-col items-start p-4"><h3 class="text-sm font-semibold">Instagram</h3><p class="mt-1 flex-1 text-xs leading-5 text-mut">Followings auswählen und vorhandenen Personen zuordnen.</p><a href="/import/instagram" class="btn btn-sm mt-4">Import öffnen</a></div>
+						<details class="card group"><summary class="flex min-h-12 cursor-pointer list-none items-center justify-between px-4 py-3 text-sm font-semibold"><span>Notion</span><span class="text-mut transition-transform group-open:rotate-180">⌄</span></summary><div class="border-t border-line px-4 py-3 text-xs leading-5 text-mut">Der einmalige Notion-Import wird auf dem Server mit <code>npm run import:notion</code> gestartet.</div></details>
+					</div>
+
+					<details class="card group mt-4" open={!!form?.import}>
+						<summary class="flex min-h-12 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3"><span><b class="text-sm">JSON-Import</b><span class="mt-0.5 block text-xs font-normal text-mut">Personen, Verbindungen und Ereignisse mit Vorschau importieren.</span></span><span class="text-mut transition-transform group-open:rotate-180">⌄</span></summary>
+						<div class="border-t border-line p-4 text-sm">
+							<p class="text-xs leading-5 text-mut">„Vorschau“ prüft und zählt, ohne Daten zu schreiben. Erst „Importieren“ übernimmt den Inhalt.</p>
+							<form method="POST" action="?/importJson" use:enhance={() => { importing = true; return async ({ update }) => { await update({ reset: false }); importing = false; }; }} class="mt-3">
+								<textarea name="json" bind:value={importJsonText} rows="8" spellcheck="false" class="inp w-full font-mono text-[12px]" placeholder={'{\n  "persons": [ … ],\n  "connections": [ … ],\n  "events": [ … ]\n}'}></textarea>
+								<input type="hidden" name="mode" value={importMode} />
+								<div class="mt-3 flex flex-wrap items-center gap-2"><button class="btn btn-sm" disabled={importing} onclick={() => (importMode = 'preview')}>Vorschau</button><button class="btn btn-sm btn-primary" disabled={importing} onclick={() => (importMode = 'apply')}>Importieren</button>{#if importing}<span class="text-xs text-mut">Import läuft …</span>{/if}</div>
+							</form>
+							{#if form?.import}
+								{@const r = form.import as import('$lib/server/jsonImport').ImportResult}
+								<div class="mt-4 rounded-lg border border-line p-3 text-xs">
+									{#if r.error}<p class="text-warn">⚠ {r.error}</p>{:else if r.report}<p class="font-semibold">{r.mode === 'apply' ? '✓ Importiert' : 'Vorschau abgeschlossen'} — {r.mode === 'apply' ? 'Daten wurden übernommen' : 'noch nichts geschrieben'}</p><div class="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-3">{#each reportRows as row}<div class="flex justify-between gap-2"><span class="text-mut">{row.label}</span><span class="tabular-nums">{r.report[row.key as keyof typeof r.report] ?? 0}</span></div>{/each}</div>{/if}
+									{#if r.warnings?.length}<ul class="mt-3 list-disc pl-4 text-warn">{#each r.warnings as w}<li>{w}</li>{/each}</ul>{/if}
+								</div>
 							{/if}
-						{/if}
-						{#if r.warnings?.length}
-							<ul class="mt-2 list-disc pl-4 text-[11px] text-warn">
-								{#each r.warnings as w}<li>{w}</li>{/each}
-							</ul>
-						{/if}
-					</div>
-				{/if}
-			</div>
-		</section>
+						</div>
+					</details>
+				</section>
+
+				<section id="ki" class="scroll-mt-4">
+					<div class="mb-4 flex items-end justify-between gap-3"><div><h2 class="text-lg font-semibold">KI &amp; Sprache</h2><p class="mt-1 text-sm text-mut">Dienste für die Mikrofon-Erzählung im Graph.</p></div><span class="chip">{aiKeySet ? 'OpenRouter verbunden' : 'Nicht eingerichtet'}</span></div>
+					<details class="card group" open={!aiKeySet}>
+						<summary class="flex min-h-12 cursor-pointer list-none items-center justify-between px-4 py-3 text-sm font-semibold"><span>Verbindungen konfigurieren</span><span class="text-mut transition-transform group-open:rotate-180">⌄</span></summary>
+						<div class="space-y-3 border-t border-line p-4 text-sm">
+							<p class="text-xs leading-5 text-mut">Schlüssel werden nur serverseitig verwendet und nach dem Speichern nicht mehr angezeigt. OpenRouter-Schlüssel erhältst du unter <a class="underline hover:text-ink" href="https://openrouter.ai/keys" target="_blank" rel="noreferrer">openrouter.ai/keys</a>.</p>
+							<label class="block"><span class="label mb-1">OpenRouter API-Key {aiKeySet ? '· gesetzt' : ''}</span><input type="password" bind:value={aiKey} autocomplete="off" placeholder={aiKeySet ? 'Leer lassen = unverändert' : 'sk-or-…'} class="inp" /></label>
+							<label class="block"><span class="label mb-1">Groq API-Key {groqKeySet ? '· gesetzt' : '· für Desktop-Spracherkennung'}</span><input type="password" bind:value={groqKey} autocomplete="off" placeholder={groqKeySet ? 'Leer lassen = unverändert' : 'gsk_…'} class="inp" /></label>
+							<label class="block"><span class="label mb-1">Modell</span><select bind:value={aiModel} class="inp"><option value="z-ai/glm-5.2">GLM-5.2 (Zhipu — günstig, stark)</option><option value="moonshotai/kimi-k2.7-code">Kimi K2.7 Code (Moonshot)</option><option value="anthropic/claude-sonnet-4.5">Claude Sonnet 4.5 (Premium)</option>{#if aiModel && !['z-ai/glm-5.2', 'moonshotai/kimi-k2.7-code', 'anthropic/claude-sonnet-4.5'].includes(aiModel)}<option value={aiModel}>{aiModel} (eigenes Modell)</option>{/if}</select></label>
+							<label class="flex min-h-11 items-start gap-3 py-1"><input type="checkbox" bind:checked={aiAutoApprove} onchange={() => { if (!aiAutoApprove) aiPragmaticMode = false; }} class="mt-1" /><span>Automatisch übernehmen<span class="mt-0.5 block text-xs leading-5 text-mut">Aus (empfohlen): Änderungen werden vor dem Schreiben zusammengefasst und bestätigt.</span></span></label>
+							<label class="flex min-h-11 items-start gap-3 py-1 {aiAutoApprove ? '' : 'opacity-55'}"><input type="checkbox" bind:checked={aiPragmaticMode} disabled={!aiAutoApprove} class="mt-1" /><span>Ohne Rückfragen minimal anlegen<span class="mt-0.5 block text-xs leading-5 text-mut">Fehlende Details bleiben leer, statt den Vorgang zu unterbrechen.</span></span></label>
+							<button class="btn btn-primary" onclick={saveAi}>KI-Einstellungen speichern</button>
+						</div>
+					</details>
+				</section>
+
+				<section id="backup" class="scroll-mt-4 pb-8">
+					<div class="mb-4"><h2 class="text-lg font-semibold">Backup</h2><p class="mt-1 text-sm text-mut">Datenbank und Profilbilder als ein Paket sichern.</p></div>
+					<div class="card flex flex-col items-start gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"><div><b class="text-sm">Vollständige Sicherung</b><p class="mt-0.5 text-xs text-mut">Enthält deine Datenbank und alle lokal gespeicherten Bilder.</p></div><a class="btn btn-primary flex-none" href="/api/backup" download>Backup herunterladen</a></div>
+				</section>
+			</main>
+		</div>
 	</div>
 </div>
+
+<style>
+	.settings-nav {
+		scrollbar-width: none;
+	}
+	.settings-nav::-webkit-scrollbar {
+		display: none;
+	}
+</style>

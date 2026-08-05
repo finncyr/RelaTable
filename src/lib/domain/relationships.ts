@@ -21,7 +21,7 @@ export const TYPE_COLORS: Record<string, string> = {
 
 // Display priority for "current type" (graph edge color, VAR-04=A) — most
 // significant active type wins.
-const TYPE_PRIORITY: Record<string, number> = {
+export const TYPE_PRIORITY: Record<string, number> = {
 	Romantik: 100,
 	'Enge Freundschaft': 80,
 	Freundschaft: 70,
@@ -29,6 +29,53 @@ const TYPE_PRIORITY: Record<string, number> = {
 	'Ex-Partner/in': 50,
 	'Freundschaft Plus': 40
 };
+
+// Familie: die Gegenrolle wird automatisch aus dem Geschlecht der jeweils
+// anderen Person abgeleitet (Onkel <-> Neffe/Nichte/"Neffe/Nichte" bei
+// unbekanntem/diversem Geschlecht). "neutral" deckt divers UND fehlende Angabe ab.
+export const FAMILY_INVERSE: Record<string, { m: string; f: string; neutral: string }> = {
+	Mutter: { m: 'Sohn', f: 'Tochter', neutral: 'Kind' },
+	Vater: { m: 'Sohn', f: 'Tochter', neutral: 'Kind' },
+	Elternteil: { m: 'Sohn', f: 'Tochter', neutral: 'Kind' },
+	Sohn: { m: 'Vater', f: 'Mutter', neutral: 'Elternteil' },
+	Tochter: { m: 'Vater', f: 'Mutter', neutral: 'Elternteil' },
+	Kind: { m: 'Vater', f: 'Mutter', neutral: 'Elternteil' },
+	Bruder: { m: 'Bruder', f: 'Schwester', neutral: 'Geschwister' },
+	Schwester: { m: 'Bruder', f: 'Schwester', neutral: 'Geschwister' },
+	Geschwister: { m: 'Bruder', f: 'Schwester', neutral: 'Geschwister' },
+	Großvater: { m: 'Enkel', f: 'Enkelin', neutral: 'Enkelkind' },
+	Großmutter: { m: 'Enkel', f: 'Enkelin', neutral: 'Enkelkind' },
+	Großelternteil: { m: 'Enkel', f: 'Enkelin', neutral: 'Enkelkind' },
+	Enkel: { m: 'Großvater', f: 'Großmutter', neutral: 'Großelternteil' },
+	Enkelin: { m: 'Großvater', f: 'Großmutter', neutral: 'Großelternteil' },
+	Enkelkind: { m: 'Großvater', f: 'Großmutter', neutral: 'Großelternteil' },
+	Onkel: { m: 'Neffe', f: 'Nichte', neutral: 'Neffe/Nichte' },
+	Tante: { m: 'Neffe', f: 'Nichte', neutral: 'Neffe/Nichte' },
+	'Onkel/Tante': { m: 'Neffe', f: 'Nichte', neutral: 'Neffe/Nichte' },
+	Neffe: { m: 'Onkel', f: 'Tante', neutral: 'Onkel/Tante' },
+	Nichte: { m: 'Onkel', f: 'Tante', neutral: 'Onkel/Tante' },
+	'Neffe/Nichte': { m: 'Onkel', f: 'Tante', neutral: 'Onkel/Tante' },
+	Cousin: { m: 'Cousin', f: 'Cousine', neutral: 'Cousin/Cousine' },
+	Cousine: { m: 'Cousin', f: 'Cousine', neutral: 'Cousin/Cousine' },
+	'Cousin/Cousine': { m: 'Cousin', f: 'Cousine', neutral: 'Cousin/Cousine' }
+};
+
+/** Gegenrolle für die andere Person einer Familienbeziehung (V-9). Divers/fehlend → neutral. */
+export function inverseFamilyRoleName(typeName: string, otherGender?: string | null): string | null {
+	const entry = FAMILY_INVERSE[typeName];
+	if (!entry) return null;
+	if (otherGender === 'Männlich') return entry.m;
+	if (otherGender === 'Weiblich') return entry.f;
+	return entry.neutral;
+}
+
+// Familie-Kanten sollen im Graph golden erscheinen, unabhängig von der genauen
+// Rolle, und optisch fast so dominant wie Romantik sein.
+const FAMILY_GOLD = '#c9a227';
+for (const name of Object.keys(FAMILY_INVERSE)) {
+	TYPE_COLORS[name] = FAMILY_GOLD;
+	TYPE_PRIORITY[name] = 95;
+}
 
 const REL_TYPE_ALIASES: Record<string, string> = {
 	'gute freunde': 'Enge Freundschaft',
@@ -106,10 +153,13 @@ export interface Period {
 	relationshipTypeId: number;
 	validFrom: Date | null;
 	validTo: Date | null; // null = active
+	// Which person the type applies to (directional Familie-Rollen only).
+	personId?: number | null;
 }
 
 export type RuleError =
 	| 'E-NG-ROM'
+	| 'E-NG-FAM'
 	| 'E-NG-DUP'
 	| 'E-FP-ROM'
 	| 'E-ROM-END-INCOMPLETE'
@@ -143,6 +193,13 @@ function isRomance(t: RelType | undefined): boolean {
 }
 function isFriendshipPlus(t: RelType | undefined): boolean {
 	return !!t && t.name === 'Freundschaft Plus';
+}
+function isFamily(t: RelType | undefined): boolean {
+	return !!t && t.categoryName === 'Familie';
+}
+
+export function hasActiveFamily(periods: Period[], types: RelType[]): boolean {
+	return activePeriods(periods).some((p) => isFamily(typeById(types, p.relationshipTypeId)));
 }
 
 /** The active closeness period for a connection, if any (at most one — C-MODEL-3). */
@@ -209,7 +266,7 @@ export function validateTimeOrder(from: Date | null, to: Date | null): RuleError
  * Evaluate starting a relationship type, given the connection's current periods.
  * Returns whether it is allowed and which active periods would be ended (V-1..V-6).
  */
-export function evaluateStartType(newTypeId: number, periods: Period[], types: RelType[]): TransitionResult {
+export function evaluateStartType(newTypeId: number, periods: Period[], types: RelType[], personId?: number | null): TransitionResult {
 	const newType = typeById(types, newTypeId);
 	if (!newType) return { allowed: false, ends: [], message: 'Unbekannter Typ' };
 	const romanceActive = hasActiveRomance(periods, types);
@@ -224,7 +281,28 @@ export function evaluateStartType(newTypeId: number, periods: Period[], types: R
 				message: 'Während einer romantischen Beziehung ist kein Nähegrad möglich.'
 			};
 		}
+		if (hasActiveFamily(periods, types)) {
+			return {
+				allowed: false,
+				error: 'E-NG-FAM',
+				ends: [],
+				message: 'Bei einer Familienbeziehung ist kein zusätzlicher Nähegrad nötig.'
+			};
+		}
 		// Changing closeness ends the previous active closeness (V-2/C-MODEL-4).
+		const cur = activeCloseness(periods, types);
+		return { allowed: true, ends: cur ? [cur.relationshipTypeId] : [] };
+	}
+
+	// Familie — ersetzt den Nähegrad (beendet ihn), läuft sonst parallel/direktional
+	// (personId trägt die Rolle: wer ist z. B. die Mutter).
+	if (isFamily(newType)) {
+		const alreadyActive = activePeriods(periods).some(
+			(p) => p.relationshipTypeId === newTypeId && (p.personId ?? null) === (personId ?? null)
+		);
+		if (alreadyActive) {
+			return { allowed: false, error: 'E-PERIOD-OVERLAP', ends: [], message: 'Bereits aktiv.' };
+		}
 		const cur = activeCloseness(periods, types);
 		return { allowed: true, ends: cur ? [cur.relationshipTypeId] : [] };
 	}

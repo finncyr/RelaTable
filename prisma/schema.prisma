@@ -71,6 +71,7 @@ model Person {
   notes           String?
   profileImagePath String?
   profileImageUrl String?
+  isCosplayer     Boolean   @default(false)
   locationId      Int?
   location        Location? @relation(fields: [locationId], references: [id], onDelete: SetNull)
   createdAt       DateTime  @default(now())
@@ -78,12 +79,56 @@ model Person {
 
   socialAccounts SocialAccount[]
   aliases       PersonAlias[]
+  interests     PersonInterest[]
+  giftIdeas     PersonGiftIdea[]
+  noteEntries   PersonNote[]
   connectionsLow  Connection[] @relation("PersonLow")
   connectionsHigh Connection[] @relation("PersonHigh")
   eventParticipations EventParticipant[]
+  familyRolePeriods ConnectionRelationshipPeriod[]
 
   @@index([ownerId])
   @@index([name])
+}
+
+// Freizeit-Vorlieben (Film|Buch|Serie|Sonstiges) und Ernährung (Allergie|Unvertraeglichkeit|Diaet|Sonstiges) —
+// gleiche Form, deshalb eine Tabelle statt zwei.
+model PersonInterest {
+  id        Int      @id @default(autoincrement())
+  personId  Int
+  person    Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  category  String
+  title     String
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([personId])
+  @@index([category])
+}
+
+model PersonGiftIdea {
+  id          Int      @id @default(autoincrement())
+  personId    Int
+  person      Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  title       String
+  note        String?
+  isFulfilled Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([personId])
+}
+
+// Freitext-Notiz, optional als abhakbare Checkliste — Aufbau wie PersonGiftIdea, aber ohne Titel/Notiz-Trennung.
+model PersonNote {
+  id          Int      @id @default(autoincrement())
+  personId    Int
+  person      Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  text        String
+  isChecklist Boolean  @default(false)
+  isDone      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([personId])
 }
 
 model PersonAlias {
@@ -177,6 +222,11 @@ model ConnectionRelationshipPeriod {
   connection       Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
   relationshipTypeId Int
   relationshipType RelationshipType @relation(fields: [relationshipTypeId], references: [id], onDelete: Restrict)
+  // Which of the connection's two persons holds this type (only meaningful for
+  // directional/gendered types like Familie-Rollen — Mutter, Onkel, ...). Null for
+  // symmetric types (Freundschaft, Romantik, Kontext).
+  personId         Int?
+  person           Person?  @relation(fields: [personId], references: [id], onDelete: SetNull)
   // day|month|year|season|approx|unknown (DEC-013)
   validFromKind    String   @default("day")
   validFrom        DateTime?

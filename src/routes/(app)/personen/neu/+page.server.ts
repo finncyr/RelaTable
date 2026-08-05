@@ -17,6 +17,7 @@ export const actions: Actions = {
 				orientation: result.data!.orientation,
 				locationId: result.data!.locationId,
 				notes: result.data!.notes,
+				isCosplayer: result.data!.isCosplayer,
 				profileImagePath: result.data!.profileImagePath,
 				profileImageUrl: result.data!.profileImageUrl,
 				aliases: {

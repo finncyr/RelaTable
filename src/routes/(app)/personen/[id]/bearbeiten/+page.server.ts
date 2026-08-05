@@ -21,6 +21,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 			orientation: person.orientation,
 			city: person.location?.city ?? '',
 			notes: person.notes ?? '',
+			isCosplayer: person.isCosplayer,
 			profileImageUrl: person.profileImageUrl ?? '',
 			currentImage: personImageSrc(person) // resolved upload-or-URL src for the form preview
 		},

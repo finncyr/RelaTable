@@ -63,9 +63,6 @@
 
 <Topbar title="Personen" subtitle={String(data.total)}>
 	<button class="btn btn-sm" onclick={toggleSort}>Name {data.sort === 'asc' ? '↑' : '↓'}</button>
-	<button class="btn btn-sm {selectMode ? 'bg-accent/20 text-ink' : ''}" onclick={toggleSelectMode}>
-		{selectMode ? 'Auswahl beenden' : 'Mehrfachauswahl'}
-	</button>
 	<a class="btn btn-primary btn-sm" href="/personen/neu">+ Neue Person</a>
 </Topbar>
 
@@ -111,24 +108,8 @@
 				<li>
 					<a
 						href={`/personen/${p.id}`}
-						onclick={(e) => {
-							if (selectMode) {
-								e.preventDefault();
-								toggleSelected(p.id);
-							}
-						}}
-						class="flex items-center gap-2.5 rounded-lg border border-line bg-card p-2.5 hover:bg-bg {selectMode && selected.has(p.id) ? 'border-accent bg-accent/10' : ''}"
+						class="flex items-center gap-2.5 rounded-lg border border-line bg-card p-2.5 hover:bg-bg"
 					>
-						{#if selectMode}
-							<input
-								type="checkbox"
-								checked={selected.has(p.id)}
-								onclick={(e) => e.stopPropagation()}
-								onchange={() => toggleSelected(p.id)}
-								class="shrink-0"
-								aria-label={`${p.name} auswählen`}
-							/>
-						{/if}
 						<Avatar person={{ name: p.name, profileImageUrl: p.image }} />
 						<span class="min-w-0 flex-1">
 							<b class="block truncate">{p.name}</b>

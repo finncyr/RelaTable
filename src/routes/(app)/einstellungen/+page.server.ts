@@ -9,7 +9,7 @@ const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 
 export const load: PageServerLoad = async ({ locals }) => {
 	const ownerId = locals.user!.id;
-	const [categories, types, exclusions, eventTypes, user, hideSensitive, aiKey, aiModel, aiAutoApprove, aiPragmaticMode] =
+	const [categories, types, exclusions, eventTypes, user, hideSensitive, aiKey, aiModel, aiAutoApprove, aiPragmaticMode, groqKey] =
 		await Promise.all([
 			db.relationshipCategory.findMany({ orderBy: { sortOrder: 'asc' } }),
 			db.relationshipType.findMany({ include: { category: true } }),
@@ -20,7 +20,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 			getSetting(ownerId, SETTING_KEYS.openRouterApiKey),
 			getSetting(ownerId, SETTING_KEYS.openRouterModel),
 			getBoolSetting(ownerId, SETTING_KEYS.narrateAutoApprove, false),
-			getBoolSetting(ownerId, SETTING_KEYS.narratePragmaticMode, false)
+			getBoolSetting(ownerId, SETTING_KEYS.narratePragmaticMode, false),
+			getSetting(ownerId, SETTING_KEYS.groqApiKey)
 		]);
 
 	const byCategory = categories.map((c) => ({
@@ -56,7 +57,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 		aiKeySet: !!aiKey,
 		aiModel: aiModel ?? '',
 		aiAutoApprove,
-		aiPragmaticMode
+		aiPragmaticMode,
+		groqKeySet: !!groqKey || !!process.env.GROQ_API_KEY
 	};
 };
 

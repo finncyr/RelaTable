@@ -182,6 +182,26 @@ function logNarrate(level: 'info' | 'warn' | 'error', event: string, fields: Rec
 	else console.info(line);
 }
 
+// Best-effort: liest Personen-IDs aus dem Tool-Ergebnis, damit der Client nach dem
+// Schreiben live dorthin fokussieren kann (Graph ?focus=<id>). Kein Vertragsformat,
+// nur Text-/JSON-Konventionen, die die Tools in mcp.ts bereits ausgeben.
+function extractPersonIds(name: string, resultText: string): number[] {
+	if (name === 'apply_import') {
+		try {
+			const parsed = JSON.parse(resultText.replace(/^FEHLER: /, ''));
+			const ids = parsed?.report?.personIds;
+			return Array.isArray(ids) ? ids.filter((x: unknown): x is number => typeof x === 'number') : [];
+		} catch {
+			return [];
+		}
+	}
+	const idMatch = resultText.match(/\(id (\d+)\)/);
+	if (idMatch) return [Number(idMatch[1])];
+	const pairMatch = resultText.match(/Pair (\d+)[–-](\d+)/);
+	if (pairMatch) return [Number(pairMatch[1]), Number(pairMatch[2])];
+	return [];
+}
+
 const WRITE_TOOLS = new Set([
 	'apply_import',
 	'update_person',
@@ -360,10 +380,11 @@ export async function agentLoop(opts: {
 	allowWrites?: boolean;
 	maxSteps?: number;
 	traceId?: string;
-}): Promise<{ reply: string; messages: Msg[]; wrote: boolean }> {
+}): Promise<{ reply: string; messages: Msg[]; wrote: boolean; personIds: number[] }> {
 	const { messages, tools, chat, callTool, allowWrites = false, maxSteps = 24, traceId = newTraceId() } = opts;
 	let wrote = false;
 	let emptyCorrected = false;
+	const touchedPersonIds: number[] = [];
 	const startedAt = Date.now();
 	for (let step = 0; step < maxSteps; step++) {
 		logNarrate('info', 'agent.step.start', { traceId, step, toolCount: tools.length, ...msgStats(messages) });
@@ -383,11 +404,12 @@ export async function agentLoop(opts: {
 				return {
 					reply: 'Das Modell hat keine Antwort erzeugt. Bitte formuliere deine Anfrage neu oder versuche es erneut.',
 					messages,
-					wrote
+					wrote,
+					personIds: touchedPersonIds
 				};
 			}
 			logNarrate('info', 'agent.done', { traceId, steps: step + 1, wrote, durationMs: Date.now() - startedAt, replyChars: m.content!.length });
-			return { reply: m.content!, messages, wrote };
+			return { reply: m.content!, messages, wrote, personIds: touchedPersonIds };
 		}
 		for (const tc of m.tool_calls) {
 			let args: unknown = {};
@@ -408,12 +430,15 @@ export async function agentLoop(opts: {
 				continue;
 			}
 			const result = await callTool(tc.function.name, args);
-			if (isWriteTool) wrote = true;
+			if (isWriteTool) {
+				wrote = true;
+				if (!result.startsWith('FEHLER: ')) touchedPersonIds.push(...extractPersonIds(tc.function.name, result));
+			}
 			messages.push({ role: 'tool', tool_call_id: tc.id, name: tc.function.name, content: result });
 		}
 	}
 	logNarrate('warn', 'agent.max_steps', { traceId, maxSteps, wrote, durationMs: Date.now() - startedAt });
-	return { reply: 'Das wurde mir zu verschachtelt — bitte konkretere Angaben machen.', messages, wrote };
+	return { reply: 'Das wurde mir zu verschachtelt — bitte konkretere Angaben machen.', messages, wrote, personIds: touchedPersonIds };
 }
 
 /**
@@ -423,7 +448,7 @@ export async function agentLoop(opts: {
 export async function runNarration(
 	prior: Msg[],
 	opts: { apiKey?: string; model?: string; autoApprove?: boolean; pragmaticMode?: boolean; provider?: NarrationProvider } = {}
-): Promise<{ reply: string; messages: Msg[]; wrote: boolean }> {
+): Promise<{ reply: string; messages: Msg[]; wrote: boolean; personIds: number[] }> {
 	const traceId = newTraceId();
 	const provider = opts.provider || (process.env.RELATABLE_NARRATE_PROVIDER as NarrationProvider | undefined) || 'openrouter';
 	const key = opts.apiKey || process.env.OPENROUTER_API_KEY;

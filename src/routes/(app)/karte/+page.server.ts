@@ -8,7 +8,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const ownerId = locals.user!.id;
 
 	const [persons, events, connections, types] = await Promise.all([
-		db.person.findMany({ where: { ownerId }, include: { location: true } }),
+		db.person.findMany({ where: { ownerId }, include: { location: true, aliases: { select: { alias: true } } } }),
 		db.event.findMany({ where: { ownerId }, include: { location: true, eventType: true } }),
 		db.connection.findMany({
 			where: { ownerId },
@@ -33,6 +33,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.map(({ p, c }) => ({
 			id: p.id,
 			name: p.name,
+			aliases: p.aliases.map((entry) => entry.alias),
 			city: p.location!.city,
 			lat: c[0],
 			lng: c[1],
@@ -83,10 +84,12 @@ export const load: PageServerLoad = async ({ locals }) => {
 		personMarkers,
 		eventMarkers,
 		connectionSegments,
-		connectionLegend: ['Bekanntschaft', 'Freundschaft', 'Enge Freundschaft', 'Romantik'].map((label) => ({
-			label,
-			color: colorForTypeName(label, types)
-		})),
+		connectionLegend: [
+			{ label: 'Bekanntschaft', color: TYPE_COLORS['Bekanntschaft'] },
+			{ label: 'Freundschaft', color: TYPE_COLORS['Freundschaft'] },
+			{ label: 'Enge Freundschaft', color: TYPE_COLORS['Enge Freundschaft'] },
+			{ label: 'Romantik', color: TYPE_COLORS['Romantik'] }
+		],
 		missing: { persons: missingPersons, events: missingEvents },
 		provider: process.env.PUBLIC_MAP_PROVIDER || 'leaflet'
 	};

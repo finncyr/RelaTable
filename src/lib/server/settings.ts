@@ -12,7 +12,8 @@ export const SETTING_KEYS = {
 	// true = KI schreibt direkt; false (Standard) = erst Zusammenfassung + Bestätigung.
 	narrateAutoApprove: 'narrateAutoApprove',
 	// An: KI legt ohne Rückfragen pragmatisch-minimal an. Nur wirksam zusammen mit narrateAutoApprove=true.
-	narratePragmaticMode: 'narratePragmaticMode'
+	narratePragmaticMode: 'narratePragmaticMode',
+	groqApiKey: 'groqApiKey'
 } as const;
 
 export async function getSetting(ownerId: number, key: string): Promise<string | null> {

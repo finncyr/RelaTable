@@ -6,11 +6,12 @@
 :root {
 	--c-ink: 43 43 43;
 	--c-mut: 119 119 119;
-	--c-line: 187 187 187;
+	--c-line: 205 205 211;
 	--c-bg: 244 244 245;
 	--c-card: 255 255 255;
 	--c-rail: 231 231 234;
-	--c-accent: 85 85 85;
+	--c-accent: 79 70 229;
+	--c-accent-strong: 67 56 202;
 	--c-warn: 179 84 30;
 	--c-ok: 47 122 67;
 }
@@ -22,7 +23,8 @@
 	--c-bg: 24 24 27;
 	--c-card: 35 35 39;
 	--c-rail: 30 30 34;
-	--c-accent: 161 161 170;
+	--c-accent: 165 180 252;
+	--c-accent-strong: 79 70 229;
 	--c-warn: 224 138 76;
 	--c-ok: 110 196 138;
 }
@@ -35,6 +37,7 @@ body {
 body {
 	@apply bg-bg text-ink antialiased;
 	font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+	font-size: 15px;
 }
 
 /* Relationship-type edge/legend colors (graph + pair). Shared so legend and edges match. */
@@ -50,30 +53,157 @@ body {
 
 @layer components {
 	.btn {
-		@apply inline-flex items-center gap-1.5 rounded-md border border-accent bg-card px-3 py-1.5 text-[13px] text-ink transition-colors hover:bg-bg disabled:opacity-50 disabled:cursor-not-allowed;
+		@apply inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border border-line bg-card px-3 py-1.5 text-[13px] font-medium text-ink transition-[background-color,border-color,color,box-shadow,transform] duration-150 hover:border-accent/40 hover:bg-bg active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/55 focus-visible:ring-offset-2 focus-visible:ring-offset-bg;
 	}
 	.btn-primary {
-		@apply border-accent bg-accent text-white hover:opacity-90;
+		border-color: rgb(var(--c-accent-strong));
+		background-color: rgb(var(--c-accent-strong));
+		@apply text-white shadow-sm hover:brightness-110;
 	}
 	.btn-warn {
 		@apply border-warn text-warn hover:bg-warn/10;
 	}
 	.btn-sm {
-		@apply px-2 py-1 text-xs;
+		@apply min-h-8 px-2.5 py-1 text-xs;
+	}
+	.icon-btn {
+		@apply inline-flex h-9 w-9 items-center justify-center rounded-lg border border-transparent text-mut transition-colors duration-150 hover:border-line hover:bg-bg hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/55 focus-visible:ring-offset-2 focus-visible:ring-offset-bg;
 	}
 	.inp {
-		@apply w-full rounded-md border border-line bg-card px-2.5 py-2 text-ink placeholder:text-mut focus:outline-none focus:ring-2 focus:ring-accent/40;
+		@apply min-h-10 w-full rounded-lg border border-line bg-card px-3 py-2 text-ink transition-shadow placeholder:text-mut focus:outline-none focus:ring-2 focus:ring-accent/45;
 	}
 	.card {
-		@apply rounded-lg border border-line bg-card;
+		@apply rounded-xl border border-line bg-card shadow-[0_1px_2px_rgb(0_0_0/0.025)];
 	}
 	.chip {
-		@apply inline-flex items-center gap-1.5 rounded-full border border-line bg-card px-2.5 py-1 text-xs text-mut;
+		@apply inline-flex min-h-8 items-center gap-1.5 rounded-full border border-line bg-card px-2.5 py-1 text-xs text-mut transition-colors hover:border-accent/35 hover:text-ink;
 	}
 	.label {
 		@apply block text-xs text-mut;
 	}
 	.avatar {
 		@apply flex flex-none items-center justify-center rounded-full border border-line bg-rail text-mut;
+	}
+	/* Interactive list rows use color rather than decorative motion. */
+	.lift {
+		@apply transition-[background-color,border-color,box-shadow] duration-150 hover:border-accent/35 hover:shadow-sm;
+	}
+}
+
+@media (max-width: 767px), (pointer: coarse) {
+	.btn,
+	.btn-sm,
+	.icon-btn,
+	button.chip,
+	a.chip {
+		min-height: 44px;
+	}
+	.icon-btn {
+		width: 44px;
+	}
+}
+
+/* ── Motion system (skipped entirely under prefers-reduced-motion) ─────────── */
+@media (prefers-reduced-motion: no-preference) {
+	/* Bottom sheets communicate entry without bounce. */
+	.sheet-in {
+		animation: sheet-up 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+	}
+	@keyframes sheet-up {
+		from {
+			transform: translateY(100%);
+		}
+	}
+
+	/* Page navigations (View Transitions API): quick crossfade + rise. */
+	::view-transition-old(root) {
+		animation: vt-out 0.16s ease-in both;
+	}
+	::view-transition-new(root) {
+		animation: vt-in 0.26s cubic-bezier(0.22, 0.8, 0.36, 1) both;
+	}
+	@keyframes vt-out {
+		to {
+			opacity: 0;
+		}
+	}
+	@keyframes vt-in {
+		from {
+			opacity: 0;
+			transform: translateY(6px);
+		}
+	}
+
+	/* Theme toggle: circular reveal from the click point (theme.ts sets the vars). */
+	html.theme-reveal::view-transition-old(root) {
+		animation: none;
+	}
+	html.theme-reveal::view-transition-new(root) {
+		animation: theme-reveal 0.5s ease-in-out both;
+	}
+	@keyframes theme-reveal {
+		from {
+			clip-path: circle(0px at var(--reveal-x, 50%) var(--reveal-y, 50%));
+		}
+		to {
+			clip-path: circle(var(--reveal-r, 150vmax) at var(--reveal-x, 50%) var(--reveal-y, 50%));
+		}
+	}
+
+	/* Leaflet marker entrance (raw divIcon HTML, so global): drop + settle. */
+	.pin-drop {
+		animation: pin-drop 0.5s cubic-bezier(0.22, 1.4, 0.36, 1) both;
+		animation-delay: var(--d, 0s);
+	}
+	@keyframes pin-drop {
+		from {
+			opacity: 0;
+			transform: translateY(-16px) scale(0.5);
+		}
+	}
+	/* Focused person on the map: pulsing halo behind the avatar pin. */
+	.pin-pulse::after {
+		content: '';
+		position: absolute;
+		inset: -6px;
+		border-radius: 9999px;
+		border: 2px solid rgb(var(--c-accent));
+		animation: pin-pulse 1.6s ease-out infinite;
+	}
+	@keyframes pin-pulse {
+		from {
+			opacity: 0.9;
+			transform: scale(0.7);
+		}
+		to {
+			opacity: 0;
+			transform: scale(1.5);
+		}
+	}
+
+	/* Voice FAB: gentle breathing halo while idle. */
+	.fab-breathe {
+		animation: fab-breathe 3.2s ease-in-out infinite;
+	}
+	@keyframes fab-breathe {
+		0%,
+		100% {
+			box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.15), 0 0 0 0 rgb(var(--c-accent) / 0.35);
+		}
+		50% {
+			box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.15), 0 0 0 10px rgb(var(--c-accent) / 0);
+		}
+	}
+
+	/* Toast checkmark: stroke draws itself in. */
+	.check-draw {
+		stroke-dasharray: 24;
+		stroke-dashoffset: 24;
+		animation: check-draw 0.4s 0.1s ease-out forwards;
+	}
+	@keyframes check-draw {
+		to {
+			stroke-dashoffset: 0;
+		}
 	}
 }
