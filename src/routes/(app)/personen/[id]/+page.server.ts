@@ -135,5 +135,18 @@ export const actions: Actions = {
 		const accountId = Number(data.get('accountId'));
 		await db.socialAccount.deleteMany({ where: { id: accountId, personId: id } });
 		return { accountDeleted: true };
+	},
+
+	deleteConnection: async ({ locals, params, request }) => {
+		const ownerId = locals.user!.id;
+		const id = Number(params.id);
+		await getOwnedPerson(ownerId, id);
+		const data = await request.formData();
+		const connectionId = Number(data.get('connectionId'));
+		// FK cascades remove periods, journal and change-log entries via the schema.
+		await db.connection.deleteMany({
+			where: { id: connectionId, ownerId, OR: [{ personLowId: id }, { personHighId: id }] }
+		});
+		return { connectionDeleted: true };
 	}
 };

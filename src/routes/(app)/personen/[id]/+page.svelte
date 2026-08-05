@@ -101,17 +101,29 @@
 			</div>
 			<div class="mt-1.5 flex flex-col gap-2">
 				{#each data.relationships as r (r.connectionId)}
-					<a href={`/pair/${data.person.id}-${r.other.id}`} class="flex items-center gap-2.5 rounded-lg border border-line bg-card p-2 hover:bg-bg">
-						<Avatar person={{ name: r.other.name, profileImageUrl: r.other.image }} size={26} />
-						<span class="min-w-0 flex-1">
-							<b class="block truncate text-[13px]">{r.other.name}</b>
-							<span class="flex items-center gap-1.5 text-[11px] text-mut">
-								<span class="inline-block h-2 w-2 rounded-full" style="background:{r.color}"></span>
-								{r.typeName ?? 'Verbindung'}
+					<div class="flex items-center gap-2.5 rounded-lg border border-line bg-card p-2">
+						<a href={`/pair/${data.person.id}-${r.other.id}`} class="flex min-w-0 flex-1 items-center gap-2.5 hover:opacity-80">
+							<Avatar person={{ name: r.other.name, profileImageUrl: r.other.image }} size={26} />
+							<span class="min-w-0 flex-1">
+								<b class="block truncate text-[13px]">{r.other.name}</b>
+								<span class="flex items-center gap-1.5 text-[11px] text-mut">
+									<span class="inline-block h-2 w-2 rounded-full" style="background:{r.color}"></span>
+									{r.typeName ?? 'Verbindung'}
+								</span>
 							</span>
-						</span>
-						<span class="text-mut">›</span>
-					</a>
+							<span class="text-mut">›</span>
+						</a>
+						<form
+							method="POST"
+							action="?/deleteConnection"
+							use:enhance={({ cancel }) => {
+								if (!confirm(`Beziehung zu „${r.other.name}“ wirklich entfernen? Der gesamte Verlauf (Zeiträume, Tagebucheinträge) geht dabei verloren.`)) cancel();
+							}}
+						>
+							<input type="hidden" name="connectionId" value={r.connectionId} />
+							<button class="text-mut hover:text-warn" title="Beziehung entfernen">✕</button>
+						</form>
+					</div>
 				{:else}
 					<p class="text-xs text-mut">Keine Beziehungen.</p>
 				{/each}
