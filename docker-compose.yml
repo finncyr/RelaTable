@@ -12,6 +12,10 @@ services:
     environment:
       ORIGIN: 'https://srv1672361.hstgr.cloud'
       PUBLIC_MAP_PROVIDER: 'leaflet'
+      # Pinned here (not just in .env) so a typo or a stale local-dev .env can
+      # never silently point Prisma/uploads at the wrong path again.
+      DATABASE_URL: 'file:/data/relatable.db'
+      DATA_DIR: '/data'
     volumes:
       - relatable-data:/data
     security_opt:
