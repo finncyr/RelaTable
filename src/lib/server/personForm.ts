@@ -11,6 +11,7 @@ const schema = z.object({
 	gender: z.enum(GENDERS).optional().or(z.literal('')),
 	city: z.string().trim().optional(),
 	notes: z.string().trim().optional(),
+	isCosplayer: z.enum(['true', '']).optional(),
 	imageMode: z.enum(['upload', 'url']).optional(),
 	profileImageUrl: z.string().trim().optional()
 });
@@ -28,6 +29,7 @@ export interface PersonFormResult {
 		gender: string | null;
 		locationId: number | null;
 		notes: string | null;
+		isCosplayer: boolean;
 		profileImagePath: string | null;
 		profileImageUrl: string | null;
 	};
@@ -42,6 +44,7 @@ export async function processPersonForm(formData: FormData): Promise<PersonFormR
 		gender: String(formData.get('gender') ?? ''),
 		city: String(formData.get('city') ?? ''),
 		notes: String(formData.get('notes') ?? ''),
+		isCosplayer: String(formData.get('isCosplayer') ?? ''),
 		imageMode: String(formData.get('imageMode') ?? 'upload'),
 		profileImageUrl: String(formData.get('profileImageUrl') ?? '')
 	};
@@ -104,6 +107,7 @@ export async function processPersonForm(formData: FormData): Promise<PersonFormR
 			gender: v.gender || null,
 			locationId,
 			notes: v.notes || null,
+			isCosplayer: v.isCosplayer === 'true',
 			profileImagePath,
 			profileImageUrl
 		}

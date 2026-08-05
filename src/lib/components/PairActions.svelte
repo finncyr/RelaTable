@@ -5,16 +5,19 @@
 	interface Catalog {
 		closeness: { id: number; name: string }[];
 		context: { id: number; name: string }[];
+		family: { id: number; name: string }[];
 		romanceId: number | null;
 		friendshipPlusId: number | null;
 	}
 	interface Props {
 		catalog: Catalog;
+		persons: { low: { id: number; name: string }; high: { id: number; name: string } };
 		activePeriods: { id: number; typeName: string }[];
 		hasRomance: boolean;
 		form?: { error?: string } | null;
 	}
-	let { catalog, activePeriods, hasRomance, form }: Props = $props();
+	let { catalog, persons, activePeriods, hasRomance, form }: Props = $props();
+	let familyPersonId = $state<number | null>(null);
 
 	let open = $state(false);
 	let action = $state('closeness');
@@ -30,6 +33,7 @@
 		...(hasRomance ? [{ k: 'romance-end', label: 'Romantik beenden' }] : [{ k: 'romance-start', label: 'Romantik beginnen' }]),
 		{ k: 'fplus', label: 'Freundschaft Plus beginnen' },
 		...(catalog.context.length ? [{ k: 'context', label: 'Kontext-Typ hinzufügen' }] : []),
+		...(catalog.family.length ? [{ k: 'family', label: 'Familienbeziehung hinzufügen' }] : []),
 		...(activePeriods.length ? [{ k: 'end', label: 'Aktiven Typ beenden' }] : []),
 		{ k: 'journal', label: 'Tagebucheintrag' }
 	]);
@@ -87,6 +91,21 @@
 						<label class="label" for="ctx">Kontext-Typ</label>
 						<select id="ctx" name="typeId" class="inp mt-1">
 							{#each catalog.context as t}<option value={t.id}>{t.name}</option>{/each}
+						</select>
+						<div class="mt-2"><ImpreciseTimeInput prefix="when" label="Beginn" /></div>
+						<div class="mt-2 flex justify-end"><button class="btn btn-primary btn-sm">Hinzufügen</button></div>
+					</form>
+				{:else if action === 'family'}
+					<form method="POST" action="?/setFamily" use:enhance={onSubmit}>
+						<p class="text-[12px] text-mut">Ersetzt einen aktiven Nähegrad. Die Gegenrolle der anderen Person (z. B. Onkel → Neffe/Nichte) wird automatisch aus deren Geschlecht abgeleitet.</p>
+						<label class="label mt-2" for="fam-person">Person</label>
+						<select id="fam-person" name="personId" class="inp mt-1" bind:value={familyPersonId}>
+							<option value={persons.low.id}>{persons.low.name}</option>
+							<option value={persons.high.id}>{persons.high.name}</option>
+						</select>
+						<label class="label mt-2" for="fam-role">Rolle</label>
+						<select id="fam-role" name="typeId" class="inp mt-1">
+							{#each catalog.family as t}<option value={t.id}>{t.name}</option>{/each}
 						</select>
 						<div class="mt-2"><ImpreciseTimeInput prefix="when" label="Beginn" /></div>
 						<div class="mt-2 flex justify-end"><button class="btn btn-primary btn-sm">Hinzufügen</button></div>

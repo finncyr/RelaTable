@@ -11,6 +11,7 @@
 		gender?: string;
 		city?: string;
 		notes?: string;
+		isCosplayer?: boolean;
 		profileImageUrl?: string;
 		currentImage?: string | null; // resolved src of the already-saved image, if any
 	}
@@ -29,6 +30,7 @@
 	let gender = $state(initial.gender ?? '');
 	let city = $state(initial.city ?? '');
 	let notes = $state(initial.notes ?? '');
+	let isCosplayer = $state(initial.isCosplayer ?? false);
 	let imageMode = $state<'upload' | 'url'>(initial.profileImageUrl ? 'url' : 'upload');
 	let urlValue = $state(initial.profileImageUrl ?? '');
 	let dirty = $state(false);
@@ -126,6 +128,11 @@
 				<label class="label" for="notes">Notizen</label>
 				<textarea id="notes" name="notes" class="inp mt-1" rows="2" bind:value={notes}></textarea>
 			</div>
+
+			<label class="mt-2.5 flex items-center gap-2 text-sm">
+				<input type="checkbox" name="isCosplayer" bind:checked={isCosplayer} value="true" />
+				Cosplayer
+			</label>
 		</div>
 
 		<div class="w-[300px]">

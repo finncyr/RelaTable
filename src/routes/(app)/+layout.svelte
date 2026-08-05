@@ -1,7 +1,11 @@
 <script lang="ts">
 	import { page } from '$app/stores';
+	import { fade } from 'svelte/transition';
 	import { NAV_ITEMS, MOBILE_TABS, isActive } from '$lib/nav';
 	import VoiceButton from '$lib/components/VoiceButton.svelte';
+	import Toasts from '$lib/components/Toasts.svelte';
+	import CommandPalette from '$lib/components/CommandPalette.svelte';
+	import Icon from '$lib/components/Icon.svelte';
 
 	let { children, data } = $props();
 
@@ -26,9 +30,9 @@
 <div class="flex h-screen w-screen overflow-hidden bg-bg" style="--mobile-tab-bar-height: 4rem;">
 	<!-- Desktop icon rail (SCR-003) -->
 	<nav
-		class="hidden flex-none flex-col gap-1 border-r border-line bg-rail p-2 transition-[width] duration-150 md:flex {expanded
+		class="hidden flex-none flex-col gap-1 border-r border-line bg-rail p-2 transition-[width] duration-200 md:flex {expanded
 			? 'w-48 items-stretch'
-			: 'w-14 items-center'}"
+			: 'w-[3.75rem] items-center'}"
 		aria-label="Hauptnavigation"
 		onmouseenter={() => (hovered = true)}
 		onmouseleave={() => (hovered = false)}
@@ -36,14 +40,14 @@
 		onfocusout={() => (focused = false)}
 	>
 		<button
-			class="mb-1 flex h-7 items-center gap-2 rounded-md px-2 text-[11px] text-mut hover:bg-line/40 {expanded
+			class="mb-1 flex h-9 items-center gap-2 rounded-lg px-2 text-[11px] text-mut transition-colors hover:bg-card hover:text-ink {expanded
 				? 'justify-end'
 				: 'justify-center'}"
 			onclick={togglePin}
 			title={pinned ? 'Rail lösen' : 'Rail anheften'}
 			aria-pressed={pinned}
 		>
-			<span>📌</span>
+			<Icon name="pin" size={15} />
 			{#if expanded}<span>{pinned ? 'gelöst' : 'anheften'}</span>{/if}
 		</button>
 
@@ -51,17 +55,16 @@
 			{@const active = isActive(path, item.match)}
 			<a
 				href={item.href}
-				class="flex h-9 items-center gap-2.5 rounded-md px-2 text-ink hover:bg-line/40 {active
-					? 'bg-line/60 font-semibold'
-					: ''} {expanded ? '' : 'justify-center'}"
+				class="flex h-10 items-center gap-2.5 rounded-lg px-2 transition-colors {active
+					? 'bg-accent/10 font-semibold text-accent'
+					: 'text-ink hover:bg-card'
+				} {expanded ? '' : 'justify-center'}"
+				style={active ? 'view-transition-name: active-nav' : ''}
 				aria-current={active ? 'page' : undefined}
 				aria-label={item.label}
 				title={item.label}
 			>
-				<span
-					class="flex h-6 w-6 flex-none items-center justify-center rounded border border-line bg-card text-[13px]"
-					aria-hidden="true">{item.icon}</span
-				>
+				<span class="flex h-7 w-7 flex-none items-center justify-center" aria-hidden="true"><Icon name={item.icon} size={19} /></span>
 				{#if expanded}<span class="whitespace-nowrap text-sm">{item.label}</span>{/if}
 			</a>
 		{/each}
@@ -69,13 +72,13 @@
 		<div class="flex-1"></div>
 		<form method="POST" action="/logout">
 			<button
-				class="flex h-9 w-full items-center gap-2.5 rounded-md px-2 text-mut hover:bg-line/40 {expanded
+				class="flex h-10 w-full items-center gap-2.5 rounded-lg px-2 text-mut transition-colors hover:bg-card hover:text-ink {expanded
 					? ''
 					: 'justify-center'}"
 				title="Abmelden"
 				aria-label="Abmelden"
 			>
-				<span class="flex h-6 w-6 flex-none items-center justify-center rounded border border-line bg-card text-[13px]">⎋</span>
+				<span class="flex h-7 w-7 flex-none items-center justify-center"><Icon name="logout" size={19} /></span>
 				{#if expanded}<span class="whitespace-nowrap text-sm">Abmelden</span>{/if}
 			</button>
 		</form>
@@ -88,29 +91,34 @@
 
 	<!-- Mobile bottom tab bar (SCR-004) -->
 	<nav
-		class="fixed inset-x-0 bottom-0 z-30 flex h-16 border-t border-line bg-card md:hidden"
+		class="fixed inset-x-0 bottom-0 z-30 flex h-16 border-t border-line bg-card pb-[env(safe-area-inset-bottom)] md:hidden"
 		aria-label="Hauptnavigation mobil"
 	>
 		{#each MOBILE_TABS as tab}
 			{@const active = isActive(path, tab.match)}
 			<a
 				href={tab.href}
-				class="flex flex-1 flex-col items-center justify-center gap-0.5 text-[10px] leading-none {active
-					? 'font-semibold text-ink'
+				class="flex min-h-11 flex-1 flex-col items-center justify-center gap-1 text-[10px] leading-none transition-colors {active
+					? 'font-semibold text-accent'
 					: 'text-mut'}"
 				aria-current={active ? 'page' : undefined}
 			>
-				<span class="flex h-8 w-12 items-center justify-center rounded-[1rem] border border-line text-[1.35rem] {active ? 'bg-line/60' : 'bg-card'}">{tab.icon}</span>
+				<span
+					class="flex h-8 w-12 items-center justify-center rounded-[1rem] transition-colors {active
+						? 'bg-accent/10'
+						: ''}"
+					style={active ? 'view-transition-name: active-tab' : ''}
+				><Icon name={tab.icon} size={20} /></span>
 				{tab.label}
 			</a>
 		{/each}
 		<button
-			class="flex flex-1 flex-col items-center justify-center gap-0.5 text-[10px] leading-none {moreOpen
-				? 'font-semibold text-ink'
+			class="flex min-h-11 flex-1 flex-col items-center justify-center gap-1 text-[10px] leading-none {moreOpen
+				? 'font-semibold text-accent'
 				: 'text-mut'}"
 			onclick={() => (moreOpen = true)}
 		>
-			<span class="flex h-8 w-12 items-center justify-center rounded-[1rem] border border-line bg-card text-[1.35rem]">⋯</span>
+			<span class="flex h-8 w-12 items-center justify-center rounded-[1rem] {moreOpen ? 'bg-accent/10' : ''}"><Icon name="more" size={21} /></span>
 			Mehr
 		</button>
 	</nav>
@@ -132,12 +140,16 @@
 			aria-label="Schließen"
 			onclick={() => (moreOpen = false)}
 			onkeydown={(e) => e.key === 'Escape' && (moreOpen = false)}
+			transition:fade={{ duration: 180 }}
 		></div>
-		<div class="fixed inset-x-0 bottom-0 z-50 rounded-t-2xl border-t border-line bg-card p-4 pb-8 md:hidden">
+		<div class="sheet-in fixed inset-x-0 bottom-0 z-50 rounded-t-2xl border-t border-line bg-card p-4 pb-8 md:hidden">
 			<div class="mx-auto mb-3 h-1 w-10 rounded-full bg-line"></div>
-			<a href="/einstellungen" class="block rounded-md px-3 py-3 hover:bg-bg" onclick={() => (moreOpen = false)}>⚙ Einstellungen</a>
+			<a href="/einstellungen" class="flex min-h-11 items-center gap-3 rounded-lg px-3 py-2 hover:bg-bg" onclick={() => (moreOpen = false)}><Icon name="settings" size={19} /> Einstellungen</a>
 			<div class="my-2 border-t border-line"></div>
-			<form method="POST" action="/logout"><button class="w-full rounded-md px-3 py-3 text-left text-warn hover:bg-bg">⎋ Abmelden</button></form>
+			<form method="POST" action="/logout"><button class="flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-warn hover:bg-bg"><Icon name="logout" size={19} /> Abmelden</button></form>
 		</div>
 	{/if}
+
+	<Toasts />
+	<CommandPalette />
 </div>

@@ -43,3 +43,7 @@ Single test: `npx vitest run src/lib/server/relationships.test.ts`
 **Data directory:** `./data/` holds `relatable.db` and uploaded profile images. E2E tests use `data/e2e.db` (never `relatable.db`).
 
 **Map provider:** Defaults to OpenStreetMap/Leaflet. `PUBLIC_MAP_PROVIDER=google` + `PUBLIC_GOOGLE_MAPS_API_KEY` switches to Google Maps (abstraction already in place).
+
+## Arbeitsweise (UI-Änderungen)
+
+Nach jeder sichtbaren UI-Änderung: selbst verifizieren, bevor du antwortest — Playwright-MCP-Screenshot gegen den Dev-Server (:5173) oder `npm run e2e`, beide Theme-Modi (hell/dunkel) prüfen. Nicht auf einen User-Screenshot warten.

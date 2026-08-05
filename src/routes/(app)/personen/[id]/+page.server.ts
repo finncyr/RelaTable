@@ -94,7 +94,8 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 			city: person.location?.city ?? null,
 			dateOfBirth: person.dateOfBirth ? person.dateOfBirth.toISOString() : null,
 			image: person.profileImagePath ? `/uploads/${person.profileImagePath}` : person.profileImageUrl,
-			notes: person.notes
+			notes: person.notes,
+			isCosplayer: person.isCosplayer
 		},
 		socialAccounts: person.socialAccounts,
 		interests: person.interests.filter((i) => !FOOD_CATEGORIES.includes(i.category)),

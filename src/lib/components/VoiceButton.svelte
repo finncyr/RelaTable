@@ -322,6 +322,31 @@
 		if (!isAndroid) {
 			navigator.mediaDevices.getUserMedia({ audio: true }).then((mStream) => {
 				stream = mStream;
+				// Real waveform: an analyser on the (already open) mic stream drives the bars.
+				// Desktop only — on Android no parallel stream exists (would starve SR).
+				try {
+					ctx = new AudioContext();
+					const srcNode = ctx.createMediaStreamSource(mStream);
+					const analyser = ctx.createAnalyser();
+					analyser.fftSize = 128;
+					analyser.smoothingTimeConstant = 0.75;
+					srcNode.connect(analyser);
+					const freq = new Uint8Array(analyser.frequencyBinCount);
+					cancelAnimationFrame(raf);
+					const loop = () => {
+						analyser.getByteFrequencyData(freq);
+						// Symmetric centre-out mapping → reads like a waveform, low bins in the middle.
+						bars = Array.from({ length: BARS }, (_, i) => {
+							const d = Math.abs(i - (BARS - 1) / 2);
+							const v = freq[Math.floor(d * 2) + 1] ?? 0;
+							return 0.08 + (v / 255) * 0.92;
+						});
+						raf = requestAnimationFrame(loop);
+					};
+					loop();
+				} catch {
+					/* analyser failed → synthetic pulse bars keep running */
+				}
 				const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
 					? 'audio/webm;codecs=opus'
 					: MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
@@ -592,7 +617,7 @@
 					? 'border border-warn bg-card text-warn'
 					: dimmed
 						? 'bg-accent text-white active:scale-95'
-						: 'bg-accent text-white hover:opacity-90 active:scale-95'}"
+						: 'fab-breathe bg-accent text-white hover:opacity-90 active:scale-95'}"
 		>
 			<svg
 				width="26"
@@ -747,10 +772,11 @@
 				<button
 					type="button"
 					onclick={confirm}
-					class="grid h-20 w-20 place-items-center rounded-full bg-accent text-white shadow-2xl ring-8 ring-accent/25 transition-transform active:scale-95"
+					class="relative grid h-20 w-20 place-items-center rounded-full bg-accent text-white shadow-2xl ring-8 ring-accent/25 transition-transform active:scale-95"
 					aria-label="Aufnahme bestätigen und senden"
 					transition:scale={{ duration: 300, start: 0.5 }}
 				>
+					<span class="pointer-events-none absolute inset-0 rounded-full bg-accent/40 motion-safe:animate-ping" aria-hidden="true"></span>
 					<svg
 						width="36"
 						height="36"

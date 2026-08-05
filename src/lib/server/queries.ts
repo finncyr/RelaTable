@@ -16,7 +16,8 @@ export async function loadRelTypes(): Promise<RelType[]> {
 		categoryName: t.category.name,
 		rank: t.rank,
 		isClosenessLevel: t.isClosenessLevel,
-		isContinuous: t.isContinuous
+		isContinuous: t.isContinuous,
+		color: t.color
 	}));
 }
 

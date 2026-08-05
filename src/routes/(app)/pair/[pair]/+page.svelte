@@ -3,6 +3,7 @@
 	import Avatar from '$lib/components/Avatar.svelte';
 	import PairActions from '$lib/components/PairActions.svelte';
 	import { goto } from '$app/navigation';
+	import { enhance } from '$app/forms';
 
 	let { data, form } = $props();
 
@@ -76,7 +77,14 @@
 				</div>
 
 				<!-- Action menu (rule-enforced relationship actions) -->
-				<PairActions catalog={data.catalog} activePeriods={data.activePeriods} hasRomance={data.hasRomance} {form} />
+				<PairActions catalog={data.catalog} persons={data.persons} activePeriods={data.activePeriods} hasRomance={data.hasRomance} {form} />
+
+				{#if data.exists}
+					<form method="POST" action="?/deleteConnection" use:enhance
+						onsubmit={(e) => { if (!confirm('Verbindung versehentlich angelegt? Sie wird komplett gelöscht, ohne Eintrag im Verlauf.')) e.preventDefault(); }}>
+						<button class="btn btn-sm mt-2 text-warn" type="submit">Verbindung ohne Eintrag beenden</button>
+					</form>
+				{/if}
 
 				<!-- Tabs -->
 				<div class="mt-3 flex overflow-hidden rounded-md border border-line text-xs">
@@ -92,6 +100,7 @@
 							{#each data.history as h}
 								<li class="relative mb-2.5">
 									<span class="absolute -left-[17px] top-1.5 h-2 w-2 rounded-full bg-mut"></span>
+									{#if h.who}<span class="text-mut">{h.who} ist</span>{/if}
 									<b>{h.type}</b>
 									<span class="text-mut"> · {h.to ? `${h.from} – ${h.to}` : `seit ${h.from}`}{h.active ? ' (aktiv)' : ''}</span>
 								</li>
@@ -99,6 +108,12 @@
 								<li class="text-xs text-mut">Kein Verlauf.</li>
 							{/each}
 						</ol>
+						{#if data.history.length > 0}
+							<form method="POST" action="?/clearHistory" use:enhance
+								onsubmit={(e) => { if (!confirm('Verlauf komplett leeren? Alle Beziehungsphasen dieser Verbindung werden unwiderruflich gelöscht.')) e.preventDefault(); }}>
+								<button class="btn btn-sm mt-2 text-warn" type="submit">Verlauf leeren</button>
+							</form>
+						{/if}
 					</div>
 				{:else if tab === 'events'}
 					<div class="mt-3">

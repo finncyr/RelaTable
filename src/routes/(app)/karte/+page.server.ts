@@ -89,7 +89,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 			{ label: 'Bekanntschaft', color: TYPE_COLORS['Bekanntschaft'] },
 			{ label: 'Freundschaft', color: TYPE_COLORS['Freundschaft'] },
 			{ label: 'Enge Freundschaft', color: TYPE_COLORS['Enge Freundschaft'] },
-			{ label: 'Romantik', color: TYPE_COLORS['Romantik'] }
+			{ label: 'Romantik', color: TYPE_COLORS['Romantik'] },
+			{ label: 'Familie', color: TYPE_COLORS['Mutter'] },
+			{ label: 'Kontext (Business, Arbeits-Kollegen, …)', color: '#7a8a99' }
 		],
 		missing: { persons: missingPersons, events: missingEvents },
 		provider: process.env.PUBLIC_MAP_PROVIDER || 'leaflet'

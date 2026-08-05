@@ -3,7 +3,7 @@
 	import 'leaflet.markercluster/dist/MarkerCluster.css';
 	import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 	import { onMount } from 'svelte';
-	import { fly } from 'svelte/transition';
+	import { fade, fly } from 'svelte/transition';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import Topbar from '$lib/components/Topbar.svelte';
@@ -60,7 +60,7 @@
 		goto(`/karte?focus=${id}`, { noScroll: true, keepFocus: true, replaceState: true });
 		// Bring the focused network into view, same "fit, don't zoom in tight" rule as the initial load.
 		if (map && visiblePersons.length) {
-			map.fitBounds(visiblePersons.map((p) => [p.lat, p.lng]), { padding: [40, 40], maxZoom: 11 });
+			map.flyToBounds(visiblePersons.map((p) => [p.lat, p.lng]), { padding: [40, 40], maxZoom: 11, duration: 0.9 });
 		}
 	}
 	function clearFocus() {
@@ -107,7 +107,7 @@
 			return;
 		}
 		searchResults = hits;
-		map?.fitBounds(hits.map((p) => [p.lat, p.lng]), { padding: [60, 60], maxZoom: 10 });
+		map?.flyToBounds(hits.map((p) => [p.lat, p.lng]), { padding: [60, 60], maxZoom: 10, duration: 0.9 });
 	}
 	function onSearchInput() {
 		clearTimeout(searchTimer);
@@ -140,24 +140,27 @@
 		);
 	}
 
-	function pinIcon(color: string) {
+	function pinIcon(color: string, delayMs = -1) {
+		const drop = delayMs >= 0 ? ` class="pin-drop" style="--d:${delayMs}ms"` : '';
 		return L.divIcon({
 			className: '',
-			html: `<div style="width:22px;height:22px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:${color};border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.4)"></div>`,
+			html: `<div${drop}><div style="width:22px;height:22px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:${color};border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.4)"></div></div>`,
 			iconSize: [22, 22],
 			iconAnchor: [11, 22],
 			popupAnchor: [0, -20]
 		});
 	}
 
-	function avatarPinIcon(person: { name: string; image?: string | null }) {
+	function avatarPinIcon(person: { name: string; image?: string | null }, delayMs = -1, focused = false) {
 		const initials = person.name.split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase();
 		const inner = person.image
 			? `<img src="${esc(person.image)}" alt="${esc(person.name)}" style="width:100%;height:100%;object-fit:cover;display:block" />`
 			: `<span style="font-size:11px;font-weight:700;color:#fff;line-height:1">${initials}</span>`;
+		const cls = [delayMs >= 0 ? 'pin-drop' : '', focused ? 'pin-pulse' : ''].filter(Boolean).join(' ');
+		const wrap = cls ? `class="${cls}" style="position:relative;--d:${Math.max(0, delayMs)}ms"` : '';
 		return L.divIcon({
 			className: '',
-			html: `<div style="width:30px;height:30px;border-radius:50%;overflow:hidden;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.35);background:${PERSON_COLOR}">${inner}</div>`,
+			html: `<div ${wrap}><div style="width:30px;height:30px;border-radius:50%;overflow:hidden;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.35);background:${PERSON_COLOR}">${inner}</div></div>`,
 			iconSize: [30, 30],
 			iconAnchor: [15, 15],
 			popupAnchor: [0, -16]
@@ -168,8 +171,13 @@
 		return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 	}
 
+	// Drop-in animation only when content actually changes — zoom rebuilds stay still.
+	let animateNextBuild = true;
+
 	function rebuild() {
 		if (!map) return;
+		const anim = animateNextBuild;
+		animateNextBuild = false;
 		personCluster.clearLayers();
 		personDirectLayer.clearLayers();
 		eventCluster.clearLayers();
@@ -196,10 +204,11 @@
 		}
 
 		if (showPersons || connectionsMode) {
+			let i = 0;
 			for (const p of persons) {
 				const [dlat, dlng] = jitter.get(p.id) ?? [0, 0];
 				const m = L.marker([p.lat + dlat, p.lng + dlng], {
-					icon: avatarPinIcon(p)
+					icon: avatarPinIcon(p, anim ? Math.min(i++ * 35, 600) : -1, p.id === focusId)
 				});
 				const focusLabel = p.id === focusId ? '' : `<br><button data-focus-id="${p.id}" class="btn btn-sm mt-1">🎯 Fokussieren</button>`;
 				m.bindPopup(
@@ -210,10 +219,11 @@
 			}
 		}
 		if (showEvents && !connectionsMode) {
+			let i = 0;
 			for (const e of data.eventMarkers) {
 				if (e.sensitive && !showSensitive) continue;
 				if (eventType && e.typeName !== eventType) continue;
-				const m = L.marker([e.lat, e.lng], { icon: pinIcon(EVENT_COLOR) });
+				const m = L.marker([e.lat, e.lng], { icon: pinIcon(EVENT_COLOR, anim ? Math.min(i++ * 35, 600) : -1) });
 				m.bindPopup(
 					`<b>${e.sensitive ? '🔒 ' : ''}${esc(e.name)}</b><br><span style="color:#777">${esc(e.typeName)} · ${esc(e.when)}</span><br><a href="/personen/${e.id}">Event ↗</a>`
 				);
@@ -339,6 +349,7 @@
 		showConnectionsOnly;
 		focusId;
 		if (!map || !mapReady) return;
+		animateNextBuild = true; // content changed → let the new pins drop in
 		rebuild();
 	});
 
@@ -502,8 +513,8 @@
 
 	<!-- Mobile filter sheet -->
 	{#if filterOpen}
-		<div class="absolute inset-0 z-[600] bg-black/30 md:hidden" role="button" tabindex="-1" aria-label="Schließen" onclick={() => (filterOpen = false)} onkeydown={() => {}}></div>
-		<div class="absolute inset-x-0 bottom-0 z-[700] rounded-t-2xl border-t border-line bg-card p-4 text-sm md:hidden">
+		<div class="absolute inset-0 z-[600] bg-black/30 md:hidden" role="button" tabindex="-1" aria-label="Schließen" onclick={() => (filterOpen = false)} onkeydown={() => {}} transition:fade={{ duration: 180 }}></div>
+		<div class="sheet-in absolute inset-x-0 bottom-0 z-[700] rounded-t-2xl border-t border-line bg-card p-4 text-sm md:hidden">
 			<div class="mx-auto mb-3 h-1 w-10 rounded-full bg-line"></div>
 			<label class="flex items-center justify-between py-1.5">
 				<span>Nur Personen + Verbindungen</span>

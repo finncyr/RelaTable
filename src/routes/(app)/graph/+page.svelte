@@ -1,11 +1,14 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { fly } from 'svelte/transition';
-	import { goto } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { browser } from '$app/environment';
 	import Topbar from '$lib/components/Topbar.svelte';
+	import Icon from '$lib/components/Icon.svelte';
+	import { toast } from '$lib/toast.svelte';
+	import { TYPE_PRIORITY, TYPE_COLORS } from '$lib/domain/relationships';
 	let { data, form } = $props();
 
 	let container: HTMLDivElement;
@@ -13,7 +16,14 @@
 	let cy: any = null;
 	let fgInstance: any = null;
 	// Plain mutable object read by canvas callbacks every frame (not Svelte state)
-	const fgMut = { focusId: null as number | null, neighborIds: new Set<number>(), searchHits: new Set<number>() };
+	const fgMut = {
+		focusId: null as number | null,
+		neighborIds: new Set<number>(),
+		searchHits: new Set<number>(),
+		hoverId: null as number | null,
+		typeFilter: null as string | null,
+		typeNodeIds: new Set<number>()
+	};
 	let engine = $state<'cytoscape' | 'forcegraph'>(
 		browser ? ((localStorage.getItem('graph.engine') as 'forcegraph' | null) ?? 'forcegraph') : 'forcegraph'
 	);
@@ -23,6 +33,15 @@
 	let panel = $state<null | { id: number; name: string; city: string | null; degree: number; x: number; y: number }>(null);
 	let menu = $state<null | { id: number; name: string; x: number; y: number }>(null);
 	let legendDimmed = $state(false);
+	let relationshipFilter = $state<string | null>(null);
+	// Outer "Bekanntschaft" ring collapses behind a "+N weitere" chip when it's crowded.
+	let outerChip = $state<null | { count: number; x: number; y: number }>(null);
+	let outerCollapsed = $state(true);
+	let outerNodesEls: any = null;
+	let outerEdgesEls: any = null;
+	let outerRingEl: any = null;
+	let outerBandRadius = 0;
+	let cyReady = $state(false); // flips true once cy exists and initial layout settled — lets the focusId effect below fire applyFocus exactly once
 
 	let searchOpen = $state(false);
 	let searchQ = $state('');
@@ -32,6 +51,36 @@
 	let longPressTimer: ReturnType<typeof setTimeout> | null = null;
 	let suppressTapUntil = 0;
 	let edgeMenu = $state<null | { source: number; target: number; typeName: string | null; x: number; y: number }>(null);
+	let edgeFamilyOpen = $state(false);
+	let edgeFamilyBtn: HTMLElement | null = $state(null);
+	let edgeMenuEl = $state<HTMLDivElement | undefined>();
+	let edgeMenuStyle = $state('');
+	$effect(() => { edgeMenu; edgeFamilyOpen = false; });
+
+	// Fixed positioning (viewport-relative), so the menu isn't clipped by the graph
+	// canvas's `overflow-hidden` when opened far down/right — measure once rendered,
+	// then clamp to the actual viewport using its real size.
+	$effect(() => {
+		if (!edgeMenu || !container) return;
+		const contRect = container.getBoundingClientRect();
+		const clientX = contRect.left + edgeMenu.x;
+		const clientY = contRect.top + edgeMenu.y;
+		edgeMenuStyle = `position:fixed; left:${clamp(clientX - 96, 8, window.innerWidth - 200)}px; top:${Math.min(Math.max(8, clientY), window.innerHeight - 200)}px;`;
+		tick().then(() => {
+			if (!edgeMenuEl || !edgeMenu) return;
+			const w = edgeMenuEl.offsetWidth, h = edgeMenuEl.offsetHeight;
+			const left = clamp(clientX - w / 2, 8, window.innerWidth - w - 8);
+			const top = clamp(clientY, 8, window.innerHeight - h - 8);
+			edgeMenuStyle = `position:fixed; left:${left}px; top:${top}px;`;
+		});
+	});
+
+	function toggleEdgeFamilyMenu() {
+		edgeFamilyOpen = !edgeFamilyOpen;
+		if (edgeFamilyOpen && edgeFamilyBtn) {
+			edgeFamilyStyle = popoverStyle(edgeFamilyBtn, { width: 224, maxHeight: 340, side: 'left' });
+		}
+	}
 	let mergeDialog = $state<null | {
 		sourceId: number;
 		sourceName: string;
@@ -44,6 +93,7 @@
 		| { step: 2; sourceId: number; sourceName: string }
 		| { step: 3; sourceId: number; sourceName: string; typeId: number; typeName: string };
 	let quickConnect = $state<QCStep | null>(null);
+	let qcFamilyOpen = $state(false);
 	let qcSearch = $state('');
 	let qcTargets = $state<Set<number>>(new Set());
 	let qcError = $state<string | null>(null);
@@ -66,10 +116,157 @@
 	let qlList1El = $state<HTMLDivElement | undefined>();
 	let qlList2El = $state<HTMLDivElement | undefined>();
 
+	// "N" (plain key, no modifier): create a person, then optionally connect it via the same quickConnect step 2/3 UI.
+	let quickNewPerson = $state<null | {}>(null);
+	let qnName = $state('');
+	let qnCity = $state('');
+	let qnError = $state<string | null>(null);
+	let qnInput = $state<HTMLInputElement | undefined>();
+	let qcNewPersonId = $state<number | null>(null); // set while the connect step follows a just-created person
+	let qcQuickType = $state<{ id: number; name: string } | null>(null); // pending type for the per-row quick-assign form
+	let qcQuickTargetId = $state<number | null>(null); // pending target person for the per-row quick-assign form
+	let qcQuickForm = $state<HTMLFormElement | undefined>();
+	let qcUnassignForm = $state<HTMLFormElement | undefined>();
+	// Map value: `undefined` (key absent) = untouched this session, fall back to the DB state.
+	// `null` = explicitly cleared this session (a misclick undone) — must NOT fall back to DB state.
+	type QcTypeRef = { id: number; name: string };
+	let qcAssigned = $state<Map<number, QcTypeRef | null>>(new Map()); // personId → Nähegrad/Romantik, for the matrix screen
+	let qcAssignedFamily = $state<Map<number, QcTypeRef | null>>(new Map()); // personId → Familien-Rolle (separate axis, can coexist with the above)
+	let qcEditMode = $state(false); // "E" shortcut: matrix screen for the already-focused person, only showing not-yet-connected people
+	let qcRowFamilyOpenId = $state<number | null>(null); // which matrix row's Familie-popover is open (custom dropdown, not native <select>)
+	let qcRowFamilyStyle = $state('');
+	let edgeFamilyStyle = $state('');
+	let themeObserver: MutationObserver | null = null;
+	type CanvasPalette = { accent: string; accentSoft: string; ink: string; muted: string; card: string; faint: string };
+	let canvasPalette: CanvasPalette = {
+		accent: 'rgb(79, 70, 229)',
+		accentSoft: 'rgba(79, 70, 229, 0.45)',
+		ink: 'rgb(43, 43, 43)',
+		muted: 'rgb(119, 119, 119)',
+		card: 'rgb(255, 255, 255)',
+		faint: 'rgba(119, 119, 119, 0.08)'
+	};
+
+	function cssColor(name: string, fallback: string, alpha: number | undefined = undefined) {
+		if (!browser) return fallback;
+		const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+		if (!raw) return fallback;
+		const channels = raw.split(/\s+/).join(', ');
+		return alpha == null ? `rgb(${channels})` : `rgba(${channels}, ${alpha})`;
+	}
+
+	function readCanvasPalette(): CanvasPalette {
+		return {
+			accent: cssColor('--c-accent', 'rgb(79, 70, 229)'),
+			accentSoft: cssColor('--c-accent', 'rgba(79, 70, 229, 0.45)', 0.45),
+			ink: cssColor('--c-ink', 'rgb(43, 43, 43)'),
+			muted: cssColor('--c-mut', 'rgb(119, 119, 119)'),
+			card: cssColor('--c-card', 'rgb(255, 255, 255)'),
+			faint: cssColor('--c-mut', 'rgba(119, 119, 119, 0.08)', 0.08)
+		};
+	}
+
+	function watchGraphTheme() {
+		canvasPalette = readCanvasPalette();
+		themeObserver?.disconnect();
+		themeObserver = new MutationObserver(() => {
+			canvasPalette = readCanvasPalette();
+			cy?.style(styles(null));
+			fgInstance?.refresh?.();
+		});
+		themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+	}
+
+	// Fixed positioning (viewport-relative) so dropdown panels aren't clipped by the
+	// graph canvas's `overflow-hidden` ancestor, and auto-flip to stay on screen.
+	function popoverStyle(btn: HTMLElement, opts: { width: number; maxHeight: number; side?: 'left' | 'right' }) {
+		const r = btn.getBoundingClientRect();
+		const vw = window.innerWidth, vh = window.innerHeight;
+		const width = opts.width;
+		let left = opts.side === 'left' ? r.left - width - 4 : r.right - width;
+		left = Math.min(Math.max(8, left), vw - width - 8);
+		const spaceBelow = vh - r.bottom;
+		const spaceAbove = r.top;
+		const openUp = spaceBelow < Math.min(opts.maxHeight, 200) && spaceAbove > spaceBelow;
+		const maxHeight = Math.max(120, Math.min(opts.maxHeight, (openUp ? spaceAbove : spaceBelow) - 8));
+		const top = openUp ? Math.max(8, r.top - maxHeight - 4) : r.bottom + 4;
+		return `position:fixed; left:${left}px; top:${top}px; width:${width}px; max-height:${maxHeight}px;`;
+	}
+
+	// Already-active type for an existing connection, read from the graph edge (single
+	// current type per edge, priority-based) — used to preload the matrix row for people
+	// found via search who are already connected. ponytail: if both a closeness/romance
+	// AND a family role are simultaneously active, only the higher-priority one shows here;
+	// the other still exists in the DB and isn't clobbered, just not shown pre-selected.
+	function existingAssignment(personId: number, wantFamily: boolean): QcTypeRef | undefined {
+		if (focusId == null) return undefined;
+		const edge = data.graph.edges.find((e) => (e.source === focusId && e.target === personId) || (e.target === focusId && e.source === personId));
+		if (!edge?.typeName) return undefined;
+		const pool = wantFamily ? data.familyTypes : data.types;
+		return pool.find((t) => t.name === edge.typeName);
+	}
+	const qcConnectedIds = $derived.by(() => {
+		if (!qcEditMode || focusId == null) return new Set<number>();
+		const set = new Set<number>();
+		for (const e of data.graph.edges) {
+			if (e.source === focusId) set.add(e.target);
+			else if (e.target === focusId) set.add(e.source);
+		}
+		return set;
+	});
+
 	// Matches on the real name or any stored alias/nickname, so "Bulle" finds "Christian Müller" if that's an alias.
 	function matchesQuery(name: string, aliases: readonly string[] | undefined, q: string) {
 		return name.toLowerCase().includes(q) || (aliases ?? []).some((a) => a.toLowerCase().includes(q));
 	}
+
+	function relationshipGroup(typeName: string | null | undefined) {
+		if (!typeName) return 'Kontext';
+		if (['Bekanntschaft', 'Freundschaft', 'Enge Freundschaft', 'Romantik'].includes(typeName)) return typeName;
+		if (data.familyTypes.some((type) => type.name === typeName)) return 'Familie';
+		return 'Kontext';
+	}
+
+	function applyRelationshipFilter() {
+		const nodeIds = new Set<number>();
+		if (relationshipFilter) {
+			for (const edge of data.graph.edges) {
+				if (relationshipGroup(edge.typeName) !== relationshipFilter) continue;
+				nodeIds.add(edge.source);
+				nodeIds.add(edge.target);
+			}
+		}
+		fgMut.typeFilter = relationshipFilter;
+		fgMut.typeNodeIds = nodeIds;
+
+		if (cy) {
+			cy.elements().removeClass('type-dim type-active');
+			if (relationshipFilter) {
+				cy.edges().forEach((edge: any) => {
+					edge.addClass(relationshipGroup(edge.data('typeName')) === relationshipFilter ? 'type-active' : 'type-dim');
+				});
+				cy.nodes().forEach((node: any) => {
+					if (!nodeIds.has(Number(node.id()))) node.addClass('type-dim');
+				});
+			}
+		}
+		fgInstance?.refresh?.();
+	}
+
+	function toggleRelationshipFilter(key: string | null) {
+		relationshipFilter = relationshipFilter === key ? null : key;
+		panel = null;
+		menu = null;
+		edgeMenu = null;
+		queueMicrotask(applyRelationshipFilter);
+	}
+
+	$effect(() => {
+		relationshipFilter;
+		data.graph.edges;
+		queueMicrotask(applyRelationshipFilter);
+	});
+
 	function navIdx(cur: number, total: number, d: number) { return total === 0 ? -1 : (cur + d + total) % total; }
 	function scrollActive(listEl: HTMLDivElement | undefined, idx: number) {
 		queueMicrotask(() => (listEl?.children[idx] as HTMLElement)?.scrollIntoView({ block: 'nearest' }));
@@ -77,7 +274,9 @@
 
 	$effect(() => {
 		if (quickConnect?.step === 1) queueMicrotask(() => qcInput1?.focus());
-		if (quickConnect?.step === 3) queueMicrotask(() => qcInput3?.focus());
+		if (quickConnect?.step === 3 || (quickConnect?.step === 2 && (qcNewPersonId != null || qcEditMode))) {
+			queueMicrotask(() => qcInput3?.focus());
+		}
 	});
 	$effect(() => { qcSearch; quickConnect?.step; qcActiveIdx = -1; });
 
@@ -86,6 +285,10 @@
 		if (quickLocation?.step === 2) queueMicrotask(() => qlInput2?.focus());
 	});
 	$effect(() => { qlSearch; quickLocation?.step; qlActiveIdx = -1; });
+
+	$effect(() => {
+		if (quickNewPerson) queueMicrotask(() => qnInput?.focus());
+	});
 
 	const allCities = $derived([...new Set(data.graph.nodes.map((n) => n.city).filter(Boolean) as string[])].sort());
 	const qlFilteredCities = $derived.by(() => {
@@ -125,9 +328,14 @@
 		if (!quickConnect) return [];
 		const q = qcSearch.trim().toLowerCase();
 		const excludeId = 'sourceId' in quickConnect ? quickConnect.sourceId : -1;
-		return data.graph.nodes
-			.filter((n) => n.id !== excludeId && (!q || matchesQuery(n.name, n.aliases, q)))
+		// Already-connected people are hidden by default (this screen is for new connections);
+		// typing a search reveals them too, so an existing connection can still be corrected here.
+		const list = data.graph.nodes
+			.filter((n) => n.id !== excludeId && (q ? matchesQuery(n.name, n.aliases, q) : !qcConnectedIds.has(n.id)))
 			.slice(0, 60);
+		// New-person matrix screen: pin the focused person to the top for quick access.
+		if (qcNewPersonId != null && focusId != null) list.sort((a, b) => (a.id === focusId ? -1 : b.id === focusId ? 1 : 0));
+		return list;
 	});
 
 	function openQuickConnect() {
@@ -135,13 +343,58 @@
 		qcSearch = '';
 		qcTargets = new Set();
 		qcError = null;
+		qcNewPersonId = null;
+		qcEditMode = false;
+		qcAssigned = new Map();
+		qcAssignedFamily = new Map();
+		qcRowFamilyOpenId = null;
 		menu = null; panel = null; searchOpen = false;
 	}
-	function closeQuickConnect() {
+	async function closeQuickConnect() {
+		const focusAfter = qcNewPersonId;
+		const hadAssignments = qcAssigned.size > 0 || qcAssignedFamily.size > 0;
 		quickConnect = null;
 		qcSearch = '';
 		qcTargets = new Set();
 		qcError = null;
+		qcNewPersonId = null;
+		qcEditMode = false;
+		qcAssigned = new Map();
+		qcAssignedFamily = new Map();
+		qcRowFamilyOpenId = null;
+		// Writes happened per-click already; the graph itself was never reloaded (deferred to "Fertig" for a live feel).
+		if (focusAfter != null || hadAssignments) await invalidateAll();
+		if (focusAfter != null) {
+			await tick(); // let the $effect rebuild cy elements from the fresh `data.graph` first
+			focusOn(focusAfter);
+		}
+	}
+	function openQuickEdit() {
+		if (focusId == null) return;
+		quickConnect = { step: 2, sourceId: focusId, sourceName: focusName ?? '' };
+		qcSearch = '';
+		qcTargets = new Set();
+		qcError = null;
+		qcNewPersonId = null;
+		qcEditMode = true;
+		qcAssigned = new Map();
+		qcAssignedFamily = new Map();
+		qcRowFamilyOpenId = null;
+		menu = null; panel = null; searchOpen = false;
+	}
+
+	function openQuickNewPerson() {
+		quickNewPerson = {};
+		qnName = '';
+		qnCity = '';
+		qnError = null;
+		menu = null; panel = null; searchOpen = false;
+	}
+	function closeQuickNewPerson() {
+		quickNewPerson = null;
+		qnName = '';
+		qnCity = '';
+		qnError = null;
 	}
 
 	// Filter only after the user pauses typing for 500ms.
@@ -259,6 +512,13 @@
 				menu = { ...menu, x: p.x, y: p.y };
 			}
 		}
+		if (outerChip) {
+			const focusNode = cy.nodes('.focus');
+			if (focusNode.empty()) { outerChip = null; return; }
+			const p = focusNode.renderedPosition();
+			const r = outerBandRadius * cy.zoom();
+			outerChip = { ...outerChip, x: p.x - r, y: p.y };
+		}
 	}
 
 	function buildElements() {
@@ -272,6 +532,7 @@
 	}
 
 	function styles(_cytoscape: any): any[] {
+		const palette = readCanvasPalette();
 		return [
 			{ selector: 'core', style: { 'background-color': 'transparent' } },
 			{
@@ -279,22 +540,22 @@
 				style: {
 					width: 'data(degree)',
 					height: 'data(degree)',
-					'background-color': '#0a1410',
+					'background-color': palette.card,
 					'background-image': 'data(image)',
 					'background-fit': 'cover',
 					'background-image-crossorigin': 'anonymous',
 					'border-width': 1.5,
-					'border-color': '#8aaa50',
+					'border-color': palette.muted,
 					label: 'data(name)',
 					'font-size': 9,
-					color: '#7a9880',
+					color: palette.muted,
 					'text-valign': 'bottom',
 					'text-margin-y': 3,
 					'text-wrap': 'wrap',
 					'text-max-width': '90px',
 					'shadow-blur': 10,
-					'shadow-color': '#7aa040',
-					'shadow-opacity': 0.4,
+					'shadow-color': palette.accent,
+					'shadow-opacity': 0.08,
 					'shadow-offset-x': 0,
 					'shadow-offset-y': 0,
 					'transition-property': 'opacity, border-width, border-color, overlay-opacity',
@@ -304,13 +565,44 @@
 			},
 			// Size from degree (mapped at element build via degree number); ensure a floor.
 			{ selector: 'node[degree < 6]', style: { width: 26, height: 26 } },
-			{ selector: 'node[?isolated]', style: { 'border-style': 'dashed', 'border-color': '#2a3d2a', 'background-color': '#080e08' } },
+			{ selector: 'node[?isolated]', style: { 'border-style': 'dashed', 'border-color': palette.muted, 'background-color': palette.card } },
 			{ selector: 'node.faded', style: { opacity: 0.12 } },
 			// Spotlight: smooth fade, keeps node in place. Non-neighbours in focus
 			// mode must not show Cytoscape's tap overlay or receive events.
 			{ selector: 'node.dim', style: { opacity: 0.06, events: 'no', 'overlay-opacity': 0 } },
 			{ selector: 'node.hidden', style: { display: 'none' } },
-			{ selector: 'node.search-hit', style: { 'border-color': '#c8d850', 'border-width': 3, 'z-index': 30, 'shadow-color': '#c0d040', 'shadow-opacity': 0.75 } },
+			{ selector: 'node.search-hit', style: { 'border-color': palette.accent, 'border-width': 3, 'z-index': 30, 'shadow-color': palette.accent, 'shadow-opacity': 0.55 } },
+			{ selector: 'node.type-dim', style: { opacity: 0.1 } },
+			// ponytail: shadow-* is Cytoscape-2-only; underlay-* is the v3 way to draw a glow halo.
+			{
+				selector: 'node.hovered',
+				style: {
+					'border-width': 2.5,
+					'underlay-color': palette.accent,
+					'underlay-padding': 7,
+					'underlay-opacity': 0.4,
+					'underlay-shape': 'ellipse',
+					'z-index': 20
+				}
+			},
+			// Closeness-band rings: dashed circles behind the nodes, one per band, colored to
+			// match that band's edge color (data(ringColor) so one rule covers all four bands).
+			{
+				selector: 'node.ring',
+				style: {
+					shape: 'ellipse',
+					width: 'data(size)',
+					height: 'data(size)',
+					'background-opacity': 0,
+					'border-width': 1.5,
+					'border-style': 'dashed',
+					'border-color': 'data(ringColor)',
+					'border-opacity': 0.5,
+					label: '',
+					events: 'no',
+					'z-index': 0
+				}
+			},
 			{
 				selector: 'edge',
 				style: {
@@ -324,6 +616,8 @@
 			},
 			// Inactive edges in focus mode should be visual context only.
 			{ selector: 'edge.dim', style: { opacity: 0.04, events: 'no', 'overlay-opacity': 0 } },
+			{ selector: 'edge.type-dim', style: { opacity: 0.025 } },
+			{ selector: 'edge.type-active', style: { width: 2, opacity: 0.9 } },
 			{ selector: 'edge.focus-edge', style: { width: 2, opacity: 0.85 } },
 			{ selector: 'edge.hidden', style: { display: 'none' } }
 		];
@@ -390,6 +684,7 @@
 
 	async function initCy() {
 		const cytoscape = (await import('cytoscape')).default;
+		watchGraphTheme();
 		// Pre-size nodes (degree value becomes the px size).
 		const els = buildElements().map((el: any) =>
 			el.data.source ? el : { data: { ...el.data, degree: nodeSize(el.data.degree) } }
@@ -470,6 +765,15 @@
 				mergeDialog = null;
 			}
 		});
+		cy.on('mouseover', 'node', (evt: any) => {
+			if (!isInteractiveNode(evt.target)) return;
+			evt.target.addClass('hovered');
+			container.style.cursor = 'pointer';
+		});
+		cy.on('mouseout', 'node', (evt: any) => {
+			evt.target.removeClass('hovered');
+			container.style.cursor = '';
+		});
 		cy.on('pan zoom resize', () => {
 			updateFloatingPositions();
 			updateLegendTransparency();
@@ -478,15 +782,21 @@
 
 		// On first load with a focus, settle positions synchronously so applyFocus reads final
 		// coordinates (animated layout would leave it reading mid-flight positions → wrong ring/zoom).
+		// Note: applyFocus itself is NOT called here — flipping cyReady lets the focusId $effect
+		// below do it exactly once. Calling it both here and from that effect double-fired it on
+		// every cold load with ?focus=…, and the two runs raced (interrupted position tweens landed
+		// contacts back at their pre-focus layout spot → the ring never centred/zoomed correctly).
 		if (focusId != null) {
 			cy.layout({ name: layoutName, animate: false, fit: false, padding: 40 }).run();
 			saveBase();
-			applyFocus(focusId);
 		} else {
 			runLayout();
 		}
+		cyReady = true;
 		graphSig = graphSignature(); // baseline: don't let the rebuild effect fire on first pass
+		graphStructSig = graphStructSignature();
 		graphReady = true;
+		applyRelationshipFilter();
 		updateLegendTransparency();
 		updateVoiceButtonTransparency();
 	}
@@ -499,23 +809,71 @@
 		return (
 			data.graph.nodes.map((n) => `${n.id}:${n.name}:${n.aliases.join('|')}:${n.image}:${n.degree}`).join(',') +
 			'|' +
-			data.graph.edges.map((e) => `${e.source}-${e.target}-${e.color}`).join(',')
+			data.graph.edges.map((e) => `${e.source}-${e.target}-${e.color}-${e.typeName}`).join(',')
 		);
+	}
+
+	// Same nodes/edges, only colors/types differ (e.g. right-click "Verbindungstyp ändern") →
+	// no need to tear down the layout, just recolor the affected edge in place.
+	function graphStructSignature() {
+		return (
+			data.graph.nodes.map((n) => n.id).join(',') +
+			'|' +
+			data.graph.edges.map((e) => e.id).join(',')
+		);
+	}
+
+	// Wipes an edge's line color from source to target instead of an instant flat swap,
+	// mirroring "the new color overwrites the old" (hard-edge gradient, not a blend).
+	function sweepEdgeColor(ele: any, fromColor: string, toColor: string) {
+		if (!fromColor || fromColor === toColor) {
+			ele.data('color', toColor);
+			return;
+		}
+		const duration = 650;
+		const start = performance.now();
+		ele.style({ 'line-fill': 'linear-gradient', 'line-gradient-stop-colors': `${toColor} ${toColor} ${fromColor} ${fromColor}` });
+		function tick(now: number) {
+			const t = Math.min(1, (now - start) / duration);
+			const pct = t * 100;
+			ele.style('line-gradient-stop-positions', `0% ${pct}% ${pct}% 100%`);
+			if (t < 1) {
+				requestAnimationFrame(tick);
+			} else {
+				ele.data('color', toColor);
+				ele.removeStyle('line-fill line-gradient-stop-colors line-gradient-stop-positions');
+			}
+		}
+		requestAnimationFrame(tick);
 	}
 
 	// Nach einem Schreibvorgang über die Erzählfunktion ruft VoiceButton invalidateAll();
 	// das aktualisiert `data` → hier die Elemente neu aufbauen (Graph "live").
 	let graphReady = false;
 	let graphSig = '';
+	let graphStructSig = '';
 	$effect(() => {
 		const sig = graphSignature(); // tracks data.graph
 		if (!graphReady || sig === graphSig) return;
+		const structSig = graphStructSignature();
+		const structUnchanged = structSig === graphStructSig;
 		graphSig = sig;
+		graphStructSig = structSig;
 		if (engine === 'forcegraph' && fgInstance) {
 			fgInstance.graphData(buildFgData());
 			return;
 		}
 		if (!cy) return;
+		if (structUnchanged) {
+			for (const e of data.graph.edges) {
+				const ele = cy.getElementById(e.id);
+				if (ele.empty()) continue;
+				const curColor = ele.data('color');
+				if (curColor !== e.color) sweepEdgeColor(ele, curColor, e.color);
+				if (ele.data('typeName') !== e.typeName) ele.data('typeName', e.typeName);
+			}
+			return;
+		}
 		const els = buildElements().map((el: any) =>
 			el.data.source ? el : { data: { ...el.data, degree: nodeSize(el.data.degree) } }
 		);
@@ -552,7 +910,9 @@
 	}
 
 	async function initForceGraph() {
-		const ForceGraph = (await import('force-graph')).default;
+		// force-graph's .d.ts wrongly types the default export as a class; it's actually a factory function.
+		const ForceGraph = (await import('force-graph')).default as any;
+		watchGraphTheme();
 		const imgCache = preloadFgImages();
 
 		function nodeRadius(val: number) {
@@ -573,16 +933,19 @@
 
 				const inFocus = fgMut.focusId != null;
 				const inSearch = fgMut.searchHits.size > 0;
-				const active = inFocus ? fgMut.neighborIds.has(node.id) : inSearch ? fgMut.searchHits.has(node.id) : true;
+				const contextActive = inFocus ? fgMut.neighborIds.has(node.id) : inSearch ? fgMut.searchHits.has(node.id) : true;
+				const typeActive = fgMut.typeFilter == null || fgMut.typeNodeIds.has(node.id);
+				const active = contextActive && typeActive;
 				ctx.globalAlpha = active ? 1 : 0.06;
 
 				const isHit = fgMut.searchHits.has(node.id);
-				ctx.shadowBlur = 14;
-				ctx.shadowColor = '#7aa040';
+				const isHover = fgMut.hoverId === node.id && active;
+				ctx.shadowBlur = isHover ? 20 : 0;
+				ctx.shadowColor = canvasPalette.accentSoft;
 				ctx.beginPath();
 				ctx.arc(x, y, r + 1.5, 0, 2 * Math.PI);
-				ctx.strokeStyle = isHit ? '#c8d850' : '#8aaa50';
-				ctx.lineWidth = isHit ? 2.5 : 1.5;
+				ctx.strokeStyle = isHit || isHover ? canvasPalette.accent : canvasPalette.muted;
+				ctx.lineWidth = isHit ? 2.5 : isHover ? 2 : 1;
 				ctx.stroke();
 				ctx.shadowBlur = 0;
 
@@ -594,14 +957,14 @@
 				if (img && img.complete && img.naturalWidth > 0) {
 					ctx.drawImage(img, x - r, y - r, r * 2, r * 2);
 				} else {
-					ctx.fillStyle = '#0a1410';
+					ctx.fillStyle = canvasPalette.card;
 					ctx.fill();
 				}
 				ctx.restore();
 
 				const fs = Math.max(6, 9 / gs);
 				ctx.font = `${fs}px system-ui,sans-serif`;
-				ctx.fillStyle = 'rgba(172,188,162,0.9)';
+				ctx.fillStyle = canvasPalette.ink;
 				ctx.textAlign = 'center';
 				ctx.textBaseline = 'top';
 				ctx.fillText(String(node.name), x, y + r + 2 / gs);
@@ -615,14 +978,15 @@
 				ctx.fill();
 			})
 			.linkColor((l: any) => {
+				if (fgMut.typeFilter && relationshipGroup(l.typeName) !== fgMut.typeFilter) return canvasPalette.faint;
 				if (fgMut.focusId != null) {
 					const src = typeof l.source === 'object' ? l.source.id : l.source;
 					const tgt = typeof l.target === 'object' ? l.target.id : l.target;
-					return fgMut.neighborIds.has(src) && fgMut.neighborIds.has(tgt) ? (l.color || 'rgba(255,255,255,0.5)') : 'rgba(255,255,255,0.03)';
+					return fgMut.neighborIds.has(src) && fgMut.neighborIds.has(tgt) ? (l.color || canvasPalette.muted) : canvasPalette.faint;
 				}
-				return l.color || 'rgba(255,255,255,0.18)';
+				return l.color || canvasPalette.muted;
 			})
-			.linkWidth(0.8)
+			.linkWidth((link: any) => (fgMut.typeFilter && relationshipGroup(link.typeName) === fgMut.typeFilter ? 1.8 : 0.8))
 			.onNodeClick((node: any, event: MouseEvent) => {
 				const now = Date.now();
 				if (node.id === lastClickId && now - lastClickTime < 300) {
@@ -640,6 +1004,10 @@
 				menu = { id: node.id, name: meta.name, x: event.offsetX, y: event.offsetY };
 				panel = null;
 			})
+			.onNodeHover((node: any) => {
+				fgMut.hoverId = node?.id ?? null;
+				container.style.cursor = node ? 'pointer' : '';
+			})
 			.onLinkClick((link: any) => {
 				const src = typeof link.source === 'object' ? link.source.id : link.source;
 				const tgt = typeof link.target === 'object' ? link.target.id : link.target;
@@ -655,6 +1023,7 @@
 			.onBackgroundClick(() => { panel = null; menu = null; edgeMenu = null; mergeDialog = null; });
 		graphReady = true;
 		graphSig = graphSignature();
+		applyRelationshipFilter();
 		if (focusId != null) applyFocusForce(focusId);
 	}
 
@@ -709,6 +1078,8 @@
 	}
 
 	function destroyEngines() {
+		themeObserver?.disconnect();
+		themeObserver = null;
 		cy?.destroy(); cy = null;
 		try { fgInstance?._destructor?.(); } catch { /* ignore */ }
 		fgInstance = null;
@@ -740,16 +1111,51 @@
 	function runLayout() {
 		if (!cy) return;
 		const lay = cy.nodes(':visible').layout({ name: layoutName, animate: true, animationDuration: 500, fit: true, padding: 40 });
-		lay.on('layoutstop', saveBase); // remember the resting positions so focus can restore them
+		// Grid is the search view's transient browsing layout, never the focus-restore baseline —
+		// saving it as "base" scattered contacts across the whole grid on the next focus.
+		if (layoutName !== 'grid') lay.on('layoutstop', saveBase);
 		lay.run();
+	}
+
+	// Pulsing halo on the focused node (same idea as the map's pin-pulse). Cytoscape has no
+	// infinite CSS animations, so an underlay animation loops while the node keeps .focus.
+	let pulseNode: any = null; // only ever stop() this one node — stopping whole collections freezes in-flight opacity transitions as sticky bypasses
+	function startFocusPulse(node: any) {
+		pulseNode = node;
+		node.style({ 'underlay-color': canvasPalette.accent, 'underlay-shape': 'ellipse' });
+		const pulse = () => {
+			if (!cy || !node.hasClass('focus')) {
+				node.removeStyle('underlay-color underlay-shape underlay-padding underlay-opacity');
+				return;
+			}
+			node.style({ 'underlay-padding': 3, 'underlay-opacity': 0.45 });
+			node.animate({
+				style: { 'underlay-padding': 18, 'underlay-opacity': 0 },
+				duration: 1500,
+				easing: 'ease-out',
+				complete: pulse
+			});
+		};
+		pulse();
 	}
 
 	function applyFocus(id: number | null) {
 		if (engine === 'forcegraph') { applyFocusForce(id); return; }
 		if (!cy) return;
+		// Cancels any layout/animation still in flight — notably the search overlay's grid
+		// layout (fit:true), which otherwise keeps re-fitting the viewport for its own 500ms
+		// and stomps the focus zoom below (search-selected focus landed off-centre/unzoomed).
+		cy.stop(true, true);
+		if (pulseNode) { pulseNode.stop(true); pulseNode = null; } // halt the running focus pulse before clearing its styles
+		cy.remove('.ring');
+		outerChip = null;
+		outerNodesEls = null;
+		outerEdgesEls = null;
+		outerRingEl = null;
 		cy.nodes().removeClass('hidden faded focus dim search-hit');
 		cy.edges().removeClass('hidden dim focus-edge');
-		cy.nodes().removeStyle('border-color border-width'); // clear any leftover flare from a previous focus
+		// 'opacity' included to heal any bypass a stopped transition may have left behind.
+		cy.nodes().removeStyle('opacity border-color border-width underlay-color underlay-shape underlay-padding underlay-opacity');
 		if (id == null) {
 			runLayout();
 			return;
@@ -767,30 +1173,97 @@
 
 		others.addClass('dim');
 		neighborhood.edges().addClass('focus-edge');
+		node.addClass('focus');
 
 		// Warm gold ring lights up immediately (on the click), holds 400ms, fades in 200ms → no lasting ring.
 		node
-			.animate({ style: { 'border-color': '#d4c870', 'border-width': 2.5 }, duration: 120, easing: 'ease-out' })
+			.animate({ style: { 'border-color': canvasPalette.accent, 'border-width': 2.5 }, duration: 120, easing: 'ease-out' })
 			.delay(400)
 			.animate({
-				style: { 'border-color': '#8aaa50', 'border-width': 1.5 },
+				style: { 'border-color': canvasPalette.accent, 'border-width': 1.5 },
 				duration: 200,
 				easing: 'ease-in',
 				complete: () => node.removeStyle('border-color border-width')
 			});
+		startFocusPulse(node); // queued after the flare, then loops until focus is cleared
 
-		// Pull the contacts onto a tight ring around the focus → short edges, then zoom in close.
-		const center = node.position();
-		const ns = neighborhood.nodes().not(node);
-		const r = 120 + ns.length * 8; // model units; grows a little so many contacts don't overlap
-		ns.forEach((n: any, i: number) => {
-			const a = (2 * Math.PI * i) / ns.length - Math.PI / 2;
-			n.animate({ position: { x: center.x + r * Math.cos(a), y: center.y + r * Math.sin(a) }, duration: 500, easing: 'ease-in-out-cubic' });
+		// Pull contacts onto banded rings by closeness → grouped visually, short edges for close ties.
+		// 4 fixed bands by TYPE_PRIORITY threshold rather than a continuous radius — groups same-type
+		// contacts into arcs (fewer crossing edges), each band drawn as its own dashed ring, and the
+		// outermost (Bekanntschaft + rest) collapses behind a "+N weitere" chip when it's crowded.
+		//
+		// Deferred one animation frame: right after cytoscape's own construction (cold load with
+		// ?focus=… in the URL), its renderer hasn't ticked yet and most position tweens issued in
+		// that same synchronous tick silently never apply — contacts stayed put, wrong/blank zoom.
+		// Waiting a frame lets the renderer come up first, then every animate() below actually lands.
+		requestAnimationFrame(() => {
+			if (!node.hasClass('focus')) return; // user already refocused elsewhere before this frame ran
+			const center = node.position();
+			const ns = neighborhood.nodes().not(node);
+			const bandOf = (n: any) => {
+				const priority = TYPE_PRIORITY[n.edgesWith(node)[0]?.data('typeName')] ?? 60;
+				return priority >= 90 ? 0 : priority >= 78 ? 1 : priority >= 68 ? 2 : 3;
+			};
+			const bandColors = ['#c9a227', TYPE_COLORS['Enge Freundschaft'], TYPE_COLORS['Freundschaft'], TYPE_COLORS['Bekanntschaft']];
+			const bands: any[][] = [[], [], [], []];
+			ns.forEach((n: any) => bands[bandOf(n)].push(n));
+			const rMax = 130 + ns.length * 6;
+			const bandRadius = [rMax * 0.35, rMax * 0.58, rMax * 0.8, rMax];
+			outerBandRadius = bandRadius[3];
+
+			bands.forEach((group, band) => {
+				if (!group.length) return;
+				cy.add({ data: { id: `ring-${band}`, ringColor: bandColors[band], size: bandRadius[band] * 2 }, position: center, classes: 'ring', locked: true, grabbable: false, selectable: false });
+				group.forEach((n: any, i: number) => {
+					const a = (2 * Math.PI * i) / group.length - Math.PI / 2;
+					const r = bandRadius[band];
+					n.animate({ position: { x: center.x + r * Math.cos(a), y: center.y + r * Math.sin(a) }, duration: 500, easing: 'ease-in-out-cubic' });
+				});
+			});
+			outerRingEl = cy.getElementById('ring-3');
+
+			const outerGroup = bands[3];
+			if (outerGroup.length) {
+				outerNodesEls = cy.collection(outerGroup);
+				outerEdgesEls = cy.collection();
+				outerGroup.forEach((n: any) => { outerEdgesEls = outerEdgesEls.union(n.edgesWith(node)); });
+				outerCollapsed = outerGroup.length > 6; // only worth collapsing once it's actually crowded
+				if (outerCollapsed) {
+					outerNodesEls.addClass('hidden');
+					outerEdgesEls.addClass('hidden');
+					outerRingEl.addClass('hidden');
+				}
+				outerChip = { count: outerGroup.length, x: 0, y: 0 };
+			}
+
+			// Fit to what actually got placed — wait for the position tweens above to land first,
+			// otherwise this reads the pre-move bounding box and zooms to the wrong place.
+			setTimeout(() => {
+				if (!node.hasClass('focus')) return; // user already refocused elsewhere, don't zoom to stale target
+				updateFloatingPositions();
+				cy.animate({ fit: { eles: neighborhood.filter(':visible'), padding: 60 }, duration: 400, easing: 'ease-in-out-cubic' });
+			}, 500);
 		});
-		// Zoom so the ring fills ~42% from centre (closer when fewer contacts → "relative" zoom). ×1.2 = tighter.
-		const view = Math.min(container.clientWidth, container.clientHeight);
-		const zoom = Math.max(cy.minZoom(), Math.min(cy.maxZoom(), (view * 0.42 * 1.2) / (r + 50)));
-		cy.animate({ zoom, center: { eles: node }, duration: 600, easing: 'ease-in-out-cubic' });
+	}
+
+	function toggleOuterBand() {
+		if (!cy || !outerNodesEls || !outerChip) return;
+		outerCollapsed = !outerCollapsed;
+		if (outerCollapsed) {
+			outerNodesEls.addClass('hidden');
+			outerEdgesEls.addClass('hidden');
+			outerRingEl?.addClass('hidden');
+		} else {
+			outerNodesEls.removeClass('hidden');
+			outerEdgesEls.removeClass('hidden');
+			outerRingEl?.removeClass('hidden');
+		}
+		updateFloatingPositions();
+		const node = cy.nodes('.focus');
+		if (!node.empty()) {
+			const neighborhood = node.closedNeighborhood();
+			cy.animate({ fit: { eles: neighborhood.filter(':visible'), padding: 60 }, duration: 400, easing: 'ease-in-out-cubic' });
+		}
 	}
 
 	function focusOn(id: number) {
@@ -836,6 +1309,7 @@
 			clearTimeout(searchTimer);
 			searchOpen = false; searchQ = ''; searchResults = [];
 			cy.nodes().removeClass('search-hit');
+			layoutName = 'circle'; // leaving search-grid mode — a later "clear focus" shouldn't re-layout as a grid
 			const id = Number(hits[0].id());
 			localStorage.setItem('graph.focus', String(id));
 			goto(`/graph?focus=${id}`, { noScroll: true, keepFocus: true });
@@ -859,6 +1333,14 @@
 				queueMicrotask(() => searchInput?.focus());
 			});
 			return;
+		}
+		// Already cytoscape (e.g. forced by an active focus) but not yet laid out as a grid — relayout now.
+		if (layoutName !== 'grid') {
+			layoutName = 'grid';
+			if (cy) {
+				cy.stop(true, true);
+				cy.layout({ name: 'grid', animate: true, animationDuration: 500, fit: true, padding: 40 }).run(); // transient search view — never saved as the focus-restore base
+			}
 		}
 		searchOpen = true;
 		queueMicrotask(() => searchInput?.focus());
@@ -890,6 +1372,7 @@
 	// React to focus param + layout changes.
 	let prevFocusId: number | null = null;
 	$effect(() => {
+		cyReady; // re-run once cy exists — see the cyReady assignment in initCy for why
 		const wasFocused = prevFocusId != null;
 		prevFocusId = focusId;
 		if (focusId == null && wasFocused && searchAutoSwitched && !searchOpen) {
@@ -922,6 +1405,11 @@
 			if (focusId == null && saved && data.graph.nodes.some((n) => n.id === Number(saved))) {
 				await goto(`/graph?focus=${saved}`, { replaceState: true, noScroll: true, keepFocus: true });
 			}
+			// Focus mode always renders as cytoscape, even across reloads/nav; revert to forcegraph on unfocus.
+			if (focusId != null && engine === 'forcegraph') {
+				searchAutoSwitched = true;
+				engine = 'cytoscape';
+			}
 			if (engine === 'forcegraph') await initForceGraph();
 			else await initCy();
 		})();
@@ -941,8 +1429,28 @@
 				e.preventDefault();
 				if (searchOpen) closeSearch();
 				openQuickLocation();
+			} else if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'n') {
+				// ponytail: plain "n" — Ctrl/Cmd+N opens a new browser window/tab and can't be
+				// overridden via preventDefault in any browser, so this shortcut has to skip the modifier.
+				const active = document.activeElement;
+				const typing = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || (active as HTMLElement)?.isContentEditable;
+				if (!typing) {
+					e.preventDefault();
+					if (searchOpen) closeSearch();
+					openQuickNewPerson();
+				}
+			} else if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'e') {
+				// "E" — edit the focused person's connections (matrix screen, only not-yet-connected people).
+				const active = document.activeElement;
+				const typing = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || (active as HTMLElement)?.isContentEditable;
+				if (!typing && focusId != null) {
+					e.preventDefault();
+					if (searchOpen) closeSearch();
+					openQuickEdit();
+				}
 			} else if (e.key === 'Escape') {
-				if (quickConnect) closeQuickConnect();
+				if (quickNewPerson) closeQuickNewPerson();
+				else if (quickConnect) closeQuickConnect();
 				else if (quickLocation) closeQuickLocation();
 				else if (searchOpen) closeSearch();
 				else if (focusId != null) clearFocus();
@@ -952,6 +1460,7 @@
 		return () => {
 			window.removeEventListener('keydown', onKey);
 			if (longPressTimer) clearTimeout(longPressTimer);
+			themeObserver?.disconnect();
 			setVoiceButtonDimmed(false);
 			cy?.destroy();
 			try { fgInstance?._destructor?.(); } catch { /* ignore */ }
@@ -964,25 +1473,25 @@
 <div class="graph-scene flex min-h-0 flex-1 flex-col overflow-hidden">
 	{#if focusId && focusName}
 		<Topbar title={`Fokus: ${focusName}`}>
-			<button class="btn btn-sm" onclick={clearFocus}>‹ Zurück</button>
+			<button class="btn btn-sm min-w-11 sm:min-w-0" onclick={openSearch} title="Person suchen (Strg+F)" aria-label="Person suchen"><Icon name="search" size={16} /><span class="hidden sm:inline">Suchen</span></button>
+			<button class="btn btn-sm" onclick={clearFocus}><Icon name="back" size={16} /> Zurück</button>
 		</Topbar>
 	{:else}
-		<Topbar title="Graph" subtitle={`${data.graph.nodes.length} Personen`} />
+		<Topbar title="Graph" subtitle={`${data.graph.nodes.length} Personen`}>
+			<button class="btn btn-sm min-w-11 sm:min-w-0" onclick={openSearch} title="Person suchen (Strg+F)" aria-label="Person suchen"><Icon name="search" size={16} /><span class="hidden sm:inline">Person suchen</span></button>
+		</Topbar>
 	{/if}
 
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div class="graph-canvas-wrap relative min-h-0 flex-1 overflow-hidden" oncontextmenu={(e) => e.preventDefault()}>
-	<div class="graph-bg-text" aria-hidden="true">GRAPH</div>
-	<div bind:this={container} class="absolute inset-0" style="touch-action: none"></div>
+	<div bind:this={container} class="graph-engine-fade absolute inset-0" style="touch-action: none"></div>
 
 	<!-- Ctrl+F search: slides in top-centre -->
 	{#if searchOpen}
-		<div class="absolute left-1/2 top-3 z-30 -translate-x-1/2" transition:fly={{ y: -30, duration: 220 }}>
+		<div class="absolute left-1/2 top-16 z-30 w-[min(22rem,calc(100%-1rem))] -translate-x-1/2" transition:fly={{ y: -20, duration: 180 }}>
 			<div class="flex flex-col gap-1">
-				<div class="flex items-center gap-2 rounded-full border border-line bg-card px-3 py-1.5 shadow-lg backdrop-blur-md">
-					<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-mut">
-						<circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-					</svg>
+				<div class="flex min-h-11 items-center gap-2 rounded-xl border border-line bg-card px-3 py-1.5 shadow-lg backdrop-blur-md">
+					<Icon name="search" size={17} className="text-mut" />
 					<!-- svelte-ignore a11y_autofocus -->
 					<input
 						bind:this={searchInput}
@@ -1006,10 +1515,10 @@
 							goto(`/graph?focus=${target.id}`, { noScroll: true, keepFocus: true });
 						}}
 						placeholder="Name suchen…"
-						class="w-48 bg-transparent text-sm outline-none"
+						class="min-w-0 flex-1 bg-transparent text-sm outline-none"
 						aria-label="Personen im Graph suchen"
 					/>
-					<button class="text-mut hover:text-ink" onclick={closeSearch} aria-label="Suche schließen">✕</button>
+					<button class="icon-btn -mr-2" onclick={closeSearch} aria-label="Suche schließen"><Icon name="close" size={17} /></button>
 				</div>
 				{#if searchResults.length}
 					<div bind:this={searchListEl} class="search-results max-h-72 overflow-y-auto rounded-xl border border-line bg-card shadow-lg backdrop-blur-md">
@@ -1037,30 +1546,48 @@
 	{#if data.graph.nodes.length === 0}
 		<div class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-center">
 			<span class="text-mut">Noch keine Verbindungen</span>
-			<a class="btn btn-primary pointer-events-auto" href="/personen/neu">+ Person/Connection</a>
+			<a class="btn btn-primary pointer-events-auto" href="/personen/neu"><Icon name="plus" size={17} /> Person anlegen</a>
 		</div>
 	{/if}
 
-	<!-- Legend (SCR-020 ②) -->
+	<!-- Relationship filters: visible by default and usable with touch or keyboard. -->
 	<div
 		bind:this={legendEl}
 		data-testid="graph-legend-overlay"
-		class={`absolute right-2.5 top-2.5 rounded-lg border border-line bg-card p-2 text-[11px] shadow-sm backdrop-blur-md transition-opacity duration-200 ${legendDimmed ? 'opacity-20' : 'opacity-100'}`}
+		class={`graph-filter-bar absolute left-2 right-2 top-2 z-20 flex items-center gap-1 overflow-x-auto rounded-xl border border-line bg-card/95 p-1.5 text-xs shadow-sm backdrop-blur-md transition-opacity duration-200 md:left-auto md:right-3 md:max-w-[calc(100%-1.5rem)] ${legendDimmed ? 'opacity-75 hover:opacity-100' : 'opacity-100'}`}
 	>
-		<b>Legende</b>
+		<button
+			class="graph-filter {relationshipFilter == null ? 'bg-accent/10 font-semibold text-accent' : 'text-mut hover:bg-bg hover:text-ink'}"
+			aria-pressed={relationshipFilter == null}
+			onclick={() => toggleRelationshipFilter(null)}
+		>Alle</button>
 		{#each data.legend as l}
-			<div class="mt-0.5 flex items-center gap-1.5">
-				<span class="inline-block h-0.5 w-4" style="background:{l.color}"></span>{l.label}
-			</div>
+			<button
+				class="graph-filter {relationshipFilter === l.key ? 'bg-accent/10 font-semibold text-accent' : 'text-mut hover:bg-bg hover:text-ink'}"
+				aria-pressed={relationshipFilter === l.key}
+				title={`${l.label} anzeigen`}
+				onclick={() => toggleRelationshipFilter(l.key)}
+			>
+				<span class="inline-block h-0.5 w-4 flex-none" style="background:{l.color}"></span>{l.label}
+			</button>
 		{/each}
 	</div>
 
 	<!-- Zoom controls -->
-	<div class="absolute bottom-2.5 left-2.5 flex flex-col overflow-hidden rounded-md border border-line bg-card backdrop-blur-md">
-		<button class="h-7 w-8 border-b border-line text-ink/70 hover:text-ink" onclick={() => zoomBy(1.25)} aria-label="Vergrößern">+</button>
-		<button class="h-7 w-8 border-b border-line text-ink/70 hover:text-ink" onclick={() => zoomBy(0.8)} aria-label="Verkleinern">−</button>
-		<button class="h-7 w-8 text-ink/70 hover:text-ink" onclick={fit} aria-label="Einpassen">⤢</button>
+	<div class="absolute bottom-2.5 left-2.5 flex flex-col overflow-hidden rounded-lg border border-line bg-card backdrop-blur-md">
+		<button class="graph-control border-b border-line" onclick={() => zoomBy(1.25)} aria-label="Vergrößern">+</button>
+		<button class="graph-control border-b border-line" onclick={() => zoomBy(0.8)} aria-label="Verkleinern">−</button>
+		<button class="graph-control" onclick={fit} aria-label="Einpassen">⤢</button>
 	</div>
+
+	<!-- Outer closeness ring's "+N weitere" chip — collapses the crowded Bekanntschaft band -->
+	{#if outerChip}
+		<button
+			class="btn btn-sm absolute z-20 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap"
+			style="left:{outerChip.x}px; top:{outerChip.y}px"
+			onclick={toggleOuterBand}
+		>{outerCollapsed ? `+${outerChip.count} weitere` : 'Einklappen'}</button>
+	{/if}
 
 	<!-- Node panel (single click) -->
 	{#if panel}
@@ -1071,7 +1598,7 @@
 					<b class="text-[13px]">{panel.name}</b>
 					<div class="text-[11px] text-mut">{panel.city ?? 'Kein Ort'} · {panel.degree} Verbindungen</div>
 				</div>
-				<button class="text-mut hover:text-ink" onclick={() => (panel = null)} aria-label="Schließen">✕</button>
+				<button class="icon-btn h-8 w-8" onclick={() => (panel = null)} aria-label="Schließen"><Icon name="close" size={16} /></button>
 			</div>
 			<div class="mt-2 flex gap-1.5">
 				<a class="btn btn-sm flex-1 justify-center" href={`/personen/${panel.id}`}>Profil</a>
@@ -1098,12 +1625,14 @@
 	{/if}
 
 	{#if edgeMenu}
-		<div class="absolute z-20 w-48 overflow-hidden rounded-lg border border-line bg-card text-sm shadow-lg backdrop-blur-md"
-			style="left:{clamp(edgeMenu.x - 96, 8, (container?.clientWidth ?? 300) - 200)}px; top:{Math.min(edgeMenu.y, (container?.clientHeight ?? 300) - 200)}px">
-			<div class="border-b border-line px-3 py-1.5 text-[11px] text-mut">Verbindungstyp ändern</div>
+		<div bind:this={edgeMenuEl} class="z-20 w-48 rounded-lg border border-line bg-card text-sm shadow-lg backdrop-blur-md" style={edgeMenuStyle}>
+			<div class="rounded-t-lg border-b border-line px-3 py-1.5 text-[11px] text-mut">Verbindungstyp ändern</div>
 			{#each data.types as t}
 				<form method="POST" action="?/changeType" use:enhance={() => async ({ result, update }) => {
-					if (result.type !== 'failure') edgeMenu = null;
+					if (result.type !== 'failure') {
+						edgeMenu = null;
+						toast(`Verbindungstyp: ${t.name}`);
+					}
 					await update();
 				}}>
 					<input type="hidden" name="low" value={edgeMenu.source} />
@@ -1116,6 +1645,52 @@
 					</button>
 				</form>
 			{/each}
+			{#if data.familyTypes.length}
+				{@const otherName = data.graph.nodes.find((n) => n.id === edgeMenu!.target)?.name ?? 'Person'}
+				<div class="relative border-y border-line">
+					<button type="button" bind:this={edgeFamilyBtn} class="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-bg"
+						onclick={toggleEdgeFamilyMenu}>
+						<span class="inline-block h-2 w-2 shrink-0 rounded-full" style="background:{data.familyTypes[0]?.color}"></span>
+						Familie
+						<span class="ml-auto text-[10px] opacity-50">{edgeFamilyOpen ? '◂' : '▸'}</span>
+					</button>
+					{#if edgeFamilyOpen}
+						<div class="fixed z-30 overflow-y-auto rounded-lg border border-line bg-card text-sm shadow-lg backdrop-blur-md" style={edgeFamilyStyle}>
+							<div class="border-b border-line px-3 py-1.5 text-[10px] text-mut">{otherName} ist …</div>
+							{#each data.familyTypes as t}
+								<form method="POST" action="?/changeType" use:enhance={() => async ({ result, update }) => {
+									if (result.type !== 'failure') {
+										edgeMenu = null;
+										toast(`${otherName} ist ${t.name}`);
+									}
+									await update();
+								}}>
+									<input type="hidden" name="low" value={edgeMenu.source} />
+									<input type="hidden" name="high" value={edgeMenu.target} />
+									<input type="hidden" name="typeId" value={t.id} />
+									<input type="hidden" name="personId" value={edgeMenu.target} />
+									<button type="submit" class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-mut hover:bg-bg">
+										<span class="inline-block h-2 w-2 shrink-0 rounded-full" style="background:{t.color}"></span>
+										{t.name}
+									</button>
+								</form>
+							{/each}
+						</div>
+					{/if}
+				</div>
+			{/if}
+			<form method="POST" action="?/deleteConnection" use:enhance={() => async ({ result, update }) => {
+					if (result.type !== 'failure') {
+						edgeMenu = null;
+						toast('Verbindung gelöscht');
+					}
+					await update();
+				}}
+				onsubmit={(e) => { if (!confirm('Verbindung versehentlich angelegt? Sie wird komplett gelöscht, ohne Eintrag im Verlauf.')) e.preventDefault(); }}>
+				<input type="hidden" name="low" value={edgeMenu.source} />
+				<input type="hidden" name="high" value={edgeMenu.target} />
+				<button type="submit" class="block w-full rounded-b-lg border-t border-line px-3 py-2 text-left text-warn hover:bg-bg">Ohne Eintrag beenden</button>
+			</form>
 		</div>
 	{/if}
 
@@ -1157,6 +1732,54 @@
 					<div class="flex justify-end gap-2 border-t border-line p-4">
 						<button type="button" class="btn" onclick={() => (mergeDialog = null)}>Abbrechen</button>
 						<button class="btn btn-primary" disabled={!mergeDialog.selectedId}>Zusammenführen</button>
+					</div>
+				</form>
+			</div>
+		</div>
+	{/if}
+
+	{#if quickNewPerson}
+		<div class="absolute inset-0 z-30 flex items-center justify-center bg-black/35 p-4" transition:fly={{ y: -20, duration: 200 }}>
+			<div class="w-full max-w-md rounded-xl border border-line bg-card shadow-xl">
+				<div class="flex items-center justify-between border-b border-line px-4 py-3">
+					<b class="text-[13px]">Person anlegen</b>
+					<button class="text-mut hover:text-ink" onclick={closeQuickNewPerson} aria-label="Schließen">✕</button>
+				</div>
+				<form method="POST" action="?/createPerson" use:enhance={() => async ({ result, update }) => {
+					if (result.type === 'failure') {
+						qnError = (result.data as any)?.createPersonError ?? 'Fehler';
+					} else if (result.type === 'success') {
+						const { personId, personName } = result.data as { personId: number; personName: string };
+						closeQuickNewPerson();
+						quickConnect = { step: 2, sourceId: personId, sourceName: personName };
+						qcSearch = ''; qcTargets = new Set(); qcError = null;
+						qcNewPersonId = personId;
+						qcAssigned = new Map();
+						qcAssignedFamily = new Map();
+						qcRowFamilyOpenId = null;
+						await update();
+					} else {
+						await update();
+					}
+				}}>
+					<div class="space-y-3 p-4">
+						<input
+							bind:this={qnInput}
+							bind:value={qnName}
+							name="name"
+							placeholder="Name…"
+							class="inp w-full text-sm"
+							aria-label="Name der neuen Person"
+							required
+						/>
+						<input bind:value={qnCity} name="city" placeholder="Stadt (optional)…" class="inp w-full text-sm" aria-label="Stadt (optional)" />
+						{#if qnError}
+							<p class="text-sm text-warn">{qnError}</p>
+						{/if}
+					</div>
+					<div class="flex justify-end gap-2 border-t border-line p-3">
+						<button type="button" class="btn btn-sm" onclick={closeQuickNewPerson}>Abbrechen</button>
+						<button class="btn btn-primary btn-sm" disabled={!qnName.trim()}>Anlegen →</button>
 					</div>
 				</form>
 			</div>
@@ -1233,7 +1856,10 @@
 						if (result.type === 'failure') {
 							alert((result.data as any)?.assignCityError ?? 'Fehler');
 						} else {
+							const n = qlTargets.size;
+							const city = ql2.city;
 							closeQuickLocation();
+							toast(`${n} Person${n !== 1 ? 'en' : ''} → ${city}`);
 							await update();
 						}
 					}}>
@@ -1347,6 +1973,134 @@
 						{/each}
 					</div>
 
+				{:else if quickConnect.step === 2 && (qcNewPersonId != null || qcEditMode)}
+					{@const qc2 = quickConnect}
+					<!-- New-person flow: assign a relationship type per person, each independently, in one screen. -->
+					<div class="p-3">
+						<input
+							bind:this={qcInput3}
+							bind:value={qcSearch}
+							placeholder="Personen filtern…"
+							class="inp w-full text-sm"
+							aria-label="Personen filtern"
+						/>
+						{#if data.familyTypes.length}
+							<p class="mt-2 text-[11px] text-mut">Familienrolle bezogen auf <b class="text-ink">{qc2.sourceName}</b> — z. B. „Mutter" heißt: diese Person ist {qc2.sourceName}s Mutter.</p>
+						{/if}
+					</div>
+					<div bind:this={qcList3El} class="max-h-72 overflow-y-auto border-t border-line">
+						{#each qcFilteredPersons as p (p.id)}
+							{@const assigned = qcAssigned.has(p.id) ? (qcAssigned.get(p.id) ?? undefined) : existingAssignment(p.id, false)}
+							{@const assignedFamily = qcAssignedFamily.has(p.id) ? (qcAssignedFamily.get(p.id) ?? undefined) : existingAssignment(p.id, true)}
+							<div class="flex items-center gap-2 border-b border-line px-4 py-2 last:border-0">
+								<span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-line bg-bg bg-cover bg-center text-[10px] text-mut" style={p.image ? `background-image:url('${p.image}')` : ''}>{p.image ? '' : p.name[0]}</span>
+								<span class="min-w-0 flex-1 truncate text-sm">
+									{p.name}
+									{#if p.id === focusId}<span class="ml-1 rounded-full bg-accent/20 px-1.5 py-0.5 text-[9px] text-accent">fokussiert</span>{/if}
+								</span>
+								<div class="flex shrink-0 items-center gap-1.5">
+									{#each data.types as t}
+										<button
+											type="button"
+											disabled={!!assignedFamily}
+											class="h-5 w-5 rounded-full border-2 transition {assigned?.id === t.id ? 'border-ink' : 'border-transparent opacity-50 hover:opacity-100'} {assignedFamily ? 'cursor-not-allowed opacity-20 hover:opacity-20' : ''}"
+											style="background:{t.color}"
+											title={assignedFamily ? 'Erst Familienbeziehung entfernen' : (assigned?.id === t.id ? `${t.name} (Klick entfernt)` : t.name)}
+											aria-label="{p.name} — {t.name}"
+											onclick={() => {
+												qcQuickType = t; qcQuickTargetId = p.id;
+												if (assigned?.id === t.id) queueMicrotask(() => qcUnassignForm?.requestSubmit());
+												else queueMicrotask(() => qcQuickForm?.requestSubmit());
+											}}
+										></button>
+									{/each}
+									{#if data.familyTypes.length}
+										{@const rowOpen = qcRowFamilyOpenId === p.id}
+										<div class="relative shrink-0">
+											<button
+												type="button"
+												disabled={!!assigned}
+												class="h-6 max-w-[6.5rem] truncate rounded border border-line bg-bg px-1.5 text-[10px] {assignedFamily ? 'text-ink' : 'text-mut'} {assigned ? 'cursor-not-allowed opacity-30' : 'hover:bg-card'}"
+												title={assigned ? 'Erst Nähegrad/Romantik entfernen' : 'Familienbeziehung'}
+												aria-label="{p.name} — Familienbeziehung"
+												onclick={(e) => {
+													if (assigned) return;
+													if (rowOpen) { qcRowFamilyOpenId = null; return; }
+													qcRowFamilyStyle = popoverStyle(e.currentTarget as HTMLElement, { width: 176, maxHeight: 260 });
+													qcRowFamilyOpenId = p.id;
+												}}
+											>{assignedFamily?.name ?? 'Familie…'}</button>
+											{#if rowOpen}
+												<div class="fixed z-30 overflow-y-auto rounded-lg border border-line bg-card text-xs shadow-lg backdrop-blur-md" style={qcRowFamilyStyle}>
+													{#each data.familyTypes as f}
+														<button
+															type="button"
+															class="block w-full px-3 py-1.5 text-left hover:bg-bg {assignedFamily?.id === f.id ? 'font-semibold text-ink' : 'text-mut'}"
+															title={assignedFamily?.id === f.id ? 'Klick entfernt die Rolle' : ''}
+															onclick={() => {
+																qcQuickType = f; qcQuickTargetId = p.id; qcRowFamilyOpenId = null;
+																if (assignedFamily?.id === f.id) queueMicrotask(() => qcUnassignForm?.requestSubmit());
+																else queueMicrotask(() => qcQuickForm?.requestSubmit());
+															}}
+														>{f.name}</button>
+													{/each}
+												</div>
+											{/if}
+										</div>
+									{/if}
+								</div>
+							</div>
+						{:else}
+							<p class="px-4 py-3 text-sm text-mut">Keine Person gefunden.</p>
+						{/each}
+					</div>
+					<form bind:this={qcQuickForm} method="POST" action="?/quickConnect" class="hidden" use:enhance={() => async ({ result }) => {
+						if (result.type === 'failure') {
+							qcError = (result.data as any)?.quickConnectError ?? 'Fehler';
+						} else if (qcQuickTargetId != null && qcQuickType) {
+							// ponytail: skip update()/invalidation per click — only reload the graph once, on "Fertig", so editing the matrix stays snappy.
+							const isFamily = data.familyTypes.some((f) => f.id === qcQuickType!.id);
+							if (isFamily) {
+								const next = new Map(qcAssignedFamily);
+								next.set(qcQuickTargetId, qcQuickType);
+								qcAssignedFamily = next;
+							} else {
+								const next = new Map(qcAssigned);
+								next.set(qcQuickTargetId, qcQuickType);
+								qcAssigned = next;
+							}
+						}
+					}}>
+						<input type="hidden" name="sourceId" value={qc2.sourceId} />
+						<input type="hidden" name="typeId" value={qcQuickType?.id ?? ''} />
+						<input type="hidden" name="targetId" value={qcQuickTargetId ?? ''} />
+					</form>
+					<form bind:this={qcUnassignForm} method="POST" action="?/unassignType" class="hidden" use:enhance={() => async ({ result }) => {
+						if (result.type === 'failure') {
+							qcError = (result.data as any)?.quickConnectError ?? 'Fehler';
+						} else if (qcQuickTargetId != null && qcQuickType) {
+							const isFamily = data.familyTypes.some((f) => f.id === qcQuickType!.id);
+							if (isFamily) {
+								const next = new Map(qcAssignedFamily);
+								next.set(qcQuickTargetId, null);
+								qcAssignedFamily = next;
+							} else {
+								const next = new Map(qcAssigned);
+								next.set(qcQuickTargetId, null);
+								qcAssigned = next;
+							}
+						}
+					}}>
+						<input type="hidden" name="sourceId" value={qc2.sourceId} />
+						<input type="hidden" name="typeId" value={qcQuickType?.id ?? ''} />
+						<input type="hidden" name="targetId" value={qcQuickTargetId ?? ''} />
+					</form>
+					{#if qcError}<p class="px-4 py-2 text-sm text-warn">{qcError}</p>{/if}
+					<div class="flex items-center justify-between border-t border-line p-3">
+						<span class="text-xs text-mut">{[...qcAssigned.values()].filter(Boolean).length + [...qcAssignedFamily.values()].filter(Boolean).length} zugewiesen</span>
+						<button class="btn btn-primary btn-sm" onclick={closeQuickConnect}>Fertig</button>
+					</div>
+
 				{:else if quickConnect.step === 2}
 					<!-- Step 2: pick type -->
 					<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -1369,7 +2123,40 @@
 								</button>
 							{/each}
 						</div>
-						<button class="mt-3 text-xs text-mut hover:text-ink" onclick={() => { quickConnect = { step: 1 }; qcSearch = ''; }}>‹ Zurück</button>
+						{#if data.familyTypes.length}
+							<div class="relative mt-2">
+								<button type="button" class="flex w-full items-center gap-2 rounded-lg border border-line px-3 py-2 text-left text-sm hover:bg-bg"
+									onclick={() => (qcFamilyOpen = !qcFamilyOpen)}>
+									<span class="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style="background:{data.familyTypes[0]?.color}"></span>
+									Familie
+									<span class="ml-auto text-[10px] opacity-50">{qcFamilyOpen ? '◂' : '▸'}</span>
+								</button>
+								{#if qcFamilyOpen}
+									<div class="absolute right-full top-0 mr-1 max-h-[70vh] w-56 overflow-y-auto rounded-lg border border-line bg-card text-sm shadow-lg backdrop-blur-md">
+										<div class="border-b border-line px-3 py-1.5 text-[10px] text-mut">Zielperson(en) ist/sind …</div>
+										{#each data.familyTypes as t}
+											<button
+												class="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-bg"
+												onclick={() => {
+													if (quickConnect?.step === 2) {
+														quickConnect = { step: 3, sourceId: quickConnect.sourceId, sourceName: quickConnect.sourceName, typeId: t.id, typeName: t.name };
+														qcSearch = '';
+														qcTargets = new Set();
+														qcFamilyOpen = false;
+													}
+												}}
+											>
+												<span class="inline-block h-2 w-2 shrink-0 rounded-full" style="background:{t.color}"></span>
+												{t.name}
+											</button>
+										{/each}
+									</div>
+								{/if}
+							</div>
+						{/if}
+						<div class="mt-3 flex items-center justify-between">
+							<button class="text-xs text-mut hover:text-ink" onclick={() => { quickConnect = { step: 1 }; qcSearch = ''; }}>‹ Zurück</button>
+						</div>
 					</div>
 
 				{:else if quickConnect.step === 3}
@@ -1379,7 +2166,9 @@
 						if (result.type === 'failure') {
 							qcError = (result.data as any)?.quickConnectError ?? 'Fehler';
 						} else {
+							const n = qcTargets.size;
 							closeQuickConnect();
+							toast(`${n} Verbindung${n !== 1 ? 'en' : ''} angelegt`);
 							await update();
 						}
 					}}>
@@ -1393,10 +2182,13 @@
 							<p class="mb-2 text-[11px] text-mut">
 								<b class="text-ink">{qc3.sourceName}</b>
 								<span class="mx-1">›</span>
-								<span class="inline-flex items-center gap-1"><span class="inline-block h-2 w-2 rounded-full" style="background:{data.types.find(t=>t.id===qc3.typeId)?.color}"></span>{qc3.typeName}</span>
+								<span class="inline-flex items-center gap-1"><span class="inline-block h-2 w-2 rounded-full" style="background:{(data.types.find(t=>t.id===qc3.typeId) ?? data.familyTypes.find(t=>t.id===qc3.typeId))?.color}"></span>{qc3.typeName}</span>
 								<span class="mx-1">›</span>
 								{qcTargets.size} gewählt
 							</p>
+							{#if data.familyTypes.some((f) => f.id === qc3.typeId)}
+								<p class="mb-2 text-[11px] text-mut">Ausgewählte Person(en) sind <b class="text-ink">{qc3.typeName}</b> von {qc3.sourceName}. Die Gegenrolle für {qc3.sourceName} wird automatisch aus deren Geschlecht abgeleitet.</p>
+							{/if}
 							<input
 								bind:this={qcInput3}
 								bind:value={qcSearch}
@@ -1461,75 +2253,61 @@
 </div>
 
 <style>
-	/* ── Cinematic graph scene ───────────────────────────────────────────────────
-	   CSS custom properties cascade to all children incl. Topbar, overlays, btns.
-	   Scoped to .graph-scene so the rest of the app is untouched.
-	──────────────────────────────────────────────────────────────────────────── */
-	.graph-scene {
-		--c-ink: 172 188 162;
-		--c-mut: 78 95 82;
-		--c-line: 32 48 36;
-		--c-bg: 5 8 6;
-		--c-card: 10 16 12;
-		--c-rail: 8 13 10;
-		--c-accent: 120 158 72;
-	}
-
-	/* Near-black star-field canvas behind Cytoscape */
 	.graph-canvas-wrap {
-		background-color: #050908;
-		/* Four layers of sparse "stars" at prime-number tile sizes for even distribution */
-		background-image:
-			radial-gradient(circle, rgba(242, 248, 228, 0.92) 0.7px, transparent 0),
-			radial-gradient(circle, rgba(196, 228, 166, 0.65) 0.7px, transparent 0),
-			radial-gradient(circle, rgba(176, 212, 148, 0.45) 1px, transparent 0),
-			radial-gradient(circle, rgba(222, 242, 202, 0.32) 0.5px, transparent 0);
-		background-size: 211px 197px, 347px 283px, 503px 431px, 157px 173px;
-		background-position: 37px 71px, 127px 43px, 89px 156px, 63px 29px;
+		background-color: rgb(var(--c-bg));
 	}
 
-	/* Subtle large background word — depth layer, not a headline */
-	.graph-bg-text {
-		position: absolute;
-		inset: 0;
-		display: flex;
+	.graph-filter {
+		display: inline-flex;
+		min-height: 2rem;
+		flex: none;
 		align-items: center;
-		justify-content: center;
-		pointer-events: none;
-		z-index: 0;
-		overflow: hidden;
-		color: rgba(98, 152, 68, 0.038);
-		font-size: min(22vw, 25vh);
-		font-weight: 900;
-		letter-spacing: -0.03em;
-		user-select: none;
+		gap: 0.375rem;
+		border-radius: 0.5rem;
+		padding: 0.375rem 0.625rem;
 		white-space: nowrap;
-		font-family: system-ui, sans-serif;
+		transition: color 150ms, background-color 150ms;
 	}
 
-	.search-results::-webkit-scrollbar { width: 4px; }
-	.search-results::-webkit-scrollbar-track { background: transparent; }
-	.search-results::-webkit-scrollbar-thumb { background: rgba(120, 158, 72, 0.45); border-radius: 2px; }
-
-	/* Glass panels: semi-transparent so backdrop-blur shows the star field through */
-	:global(.graph-scene .backdrop-blur-md) {
-		background-color: rgba(10, 16, 12, 0.82) !important;
+	.graph-filter-bar {
+		scrollbar-width: none;
+	}
+	.graph-filter-bar::-webkit-scrollbar {
+		display: none;
 	}
 
-	/* Topbar in the graph scene: lighter weight, techno spacing */
-	:global(.graph-scene header) {
-		background-color: rgba(8, 13, 10, 0.92);
-		backdrop-filter: blur(6px);
-		-webkit-backdrop-filter: blur(6px);
+	.graph-control {
+		display: grid;
+		height: 2.25rem;
+		width: 2.25rem;
+		place-items: center;
+		color: rgb(var(--c-mut));
+		transition: color 150ms, background-color 150ms;
 	}
-	:global(.graph-scene header b) {
-		font-weight: 500;
-		letter-spacing: 0.06em;
-		font-size: 12px;
-		text-transform: uppercase;
-		opacity: 0.85;
+
+	.graph-control:hover {
+		background-color: rgb(var(--c-bg));
+		color: rgb(var(--c-ink));
 	}
-	:global(.graph-scene header span.text-mut) {
-		letter-spacing: 0.03em;
+
+	.search-results::-webkit-scrollbar {
+		width: 4px;
+	}
+	.search-results::-webkit-scrollbar-track {
+		background: transparent;
+	}
+	.search-results::-webkit-scrollbar-thumb {
+		border-radius: 2px;
+		background: rgb(var(--c-accent) / 0.4);
+	}
+
+	@media (max-width: 767px), (pointer: coarse) {
+		.graph-filter,
+		.graph-control {
+			min-height: 44px;
+		}
+		.graph-control {
+			width: 44px;
+		}
 	}
 </style>

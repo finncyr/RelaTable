@@ -8,7 +8,20 @@ const CATEGORIES = [
 	{ name: 'Naehegrad', sortOrder: 1 },
 	{ name: 'Status', sortOrder: 2 },
 	{ name: 'Romantik', sortOrder: 3 },
-	{ name: 'Kontext', sortOrder: 4 }
+	{ name: 'Kontext', sortOrder: 4 },
+	{ name: 'Familie', sortOrder: 5 }
+];
+
+// Rollen sind eindeutig gegendert; man wählt nur die eigene Rolle, die Gegenrolle
+// der anderen Person wird automatisch aus deren Geschlecht abgeleitet
+// (FAMILY_INVERSE in domain/relationships.ts). Die "/"-Varianten sind der
+// geschlechtsneutrale Fallback für divers/unbekannt (z. B. Mutter -> Kind).
+const FAMILY_ROLES = [
+	'Mutter', 'Vater', 'Elternteil', 'Tochter', 'Sohn', 'Kind',
+	'Schwester', 'Bruder', 'Geschwister',
+	'Großmutter', 'Großvater', 'Großelternteil', 'Enkelin', 'Enkel', 'Enkelkind',
+	'Tante', 'Onkel', 'Onkel/Tante', 'Nichte', 'Neffe', 'Neffe/Nichte',
+	'Cousine', 'Cousin', 'Cousin/Cousine'
 ];
 
 const TYPES = [
@@ -18,8 +31,8 @@ const TYPES = [
 	{ name: 'Freundschaft Plus', cat: 'Status', rank: null, closeness: false, color: '#9a6fb0' },
 	{ name: 'Romantik', cat: 'Romantik', rank: null, closeness: false, color: '#cc8844' },
 	{ name: 'Ex-Partner/in', cat: 'Status', rank: null, closeness: false, color: '#b06a6a' },
-	{ name: 'Cosplay', cat: 'Kontext', rank: null, closeness: false, color: '#7a8a99' },
-	{ name: 'Business', cat: 'Kontext', rank: null, closeness: false, color: '#7a8a99' }
+	{ name: 'Arbeits-Kollegen', cat: 'Kontext', rank: null, closeness: false, color: '#8b5cf6' },
+	...FAMILY_ROLES.map((name) => ({ name, cat: 'Familie', rank: null, closeness: false, color: '#c9a227' }))
 ];
 
 const EVENT_TYPES = [
@@ -135,10 +148,7 @@ export async function seedDemo(db: PrismaClient, ownerId: number) {
 	await connect(mara.id, jonas.id, [{ type: 'Romantik', from: new Date(Date.UTC(2023, 3, 15)), to: null }]);
 	await connect(aylin.id, sven.id, [{ type: 'Bekanntschaft', from: new Date(Date.UTC(2021, 0, 1)), to: null }]);
 	await connect(sven.id, lia.id, [{ type: 'Freundschaft', from: new Date(Date.UTC(2020, 8, 1)), to: null }]);
-	await connect(mara.id, lia.id, [
-		{ type: 'Freundschaft', from: new Date(Date.UTC(2021, 2, 1)), to: null },
-		{ type: 'Cosplay', from: new Date(Date.UTC(2020, 0, 1)), fromKind: 'year', to: null }
-	]);
+	await connect(mara.id, lia.id, [{ type: 'Freundschaft', from: new Date(Date.UTC(2021, 2, 1)), to: null }]);
 
 	const eventTypes = await db.eventType.findMany();
 	const evtId = (n: string) => eventTypes.find((t) => t.name === n)!.id;

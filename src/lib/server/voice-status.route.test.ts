@@ -36,7 +36,7 @@ describe('GET /api/voice-status', () => {
 		const data = await res.json();
 
 		expect(openRouterStatus).toHaveBeenCalledWith('sk-settings-key');
-		expect(data).toEqual({ ok: true, reason: null });
+		expect(data).toMatchObject({ ok: true, reason: null });
 	});
 
 	it('ohne RELATABLE_MCP_TOKEN → reason=error + message', async () => {

@@ -237,6 +237,13 @@ docker compose up -d --build
 - Put a TLS-terminating reverse proxy (Caddy/Traefik/nginx) in front.
 - Backup = download the package from **Einstellungen → Backup** (a
   `tar.gz` of `/data`), or snapshot the volume.
+- **`.env` for Docker:** the Dockerfile already sets `DATABASE_URL="file:/data/relatable.db"`
+  and `DATA_DIR="/data"` for the container. Do **not** copy `.env.example`'s
+  `DATABASE_URL="file:../data/relatable.db"` into the `.env` used by
+  `docker-compose.yml` — that path is relative to `prisma/schema.prisma` and is
+  only correct for local (non-Docker) dev; inside the container it would
+  resolve outside the `/data` volume. Leave `DATABASE_URL`/`DATA_DIR` unset in
+  the Docker `.env` and let the image defaults apply.
 
 The map uses keyless **OpenStreetMap/Leaflet** by default. To switch to Google
 Maps later, set `PUBLIC_MAP_PROVIDER=google` and `PUBLIC_GOOGLE_MAPS_API_KEY`

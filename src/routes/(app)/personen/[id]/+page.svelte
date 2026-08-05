@@ -56,10 +56,13 @@
 <div class="flex-1 overflow-auto p-3.5">
 	<!-- Header -->
 	<div class="mb-4 flex items-center gap-3">
-		<Avatar person={{ name: data.person.name, profileImageUrl: data.person.image }} size={64} />
+		<span class="flex-none" style="view-transition-name: person-{data.person.id}">
+			<Avatar person={{ name: data.person.name, profileImageUrl: data.person.image }} size={64} />
+		</span>
 		<div>
 			<b class="text-lg">{data.person.name}</b>
 			<div class="text-xs text-mut">{subtitle || '—'}{data.person.gender ? ` · ${data.person.gender}` : ''}</div>
+			{#if data.person.isCosplayer}<span class="chip text-[11px]">Cosplayer</span>{/if}
 			{#if data.person.aliases.length}
 				<div class="mt-1 flex flex-wrap gap-1">
 					{#each data.person.aliases as alias}
@@ -75,9 +78,9 @@
 		<p class="mb-4 whitespace-pre-wrap rounded-lg border border-line bg-card p-3 text-sm">{data.person.notes}</p>
 	{/if}
 
-	<div class="grid grid-cols-[repeat(auto-fit,minmax(280px,1fr))] gap-5">
+	<div class="stagger grid grid-cols-[repeat(auto-fit,minmax(280px,1fr))] gap-5">
 		<!-- Persönliches: Interessen, Essen & Allergien, Geschenkideen -->
-		<section>
+		<section style="--i:0">
 			<b class="text-[13px]">Persönliches</b>
 			<div class="mt-2 flex flex-col gap-4">
 				<!-- Interessen (Filme/Bücher/Serien) -->
@@ -270,7 +273,7 @@
 		</section>
 
 		<!-- Social accounts -->
-		<section>
+		<section style="--i:2">
 			<div class="flex items-center gap-2">
 				<b class="text-[13px]">Social Accounts</b>
 				<span class="flex-1"></span>
@@ -312,7 +315,7 @@
 		</section>
 
 		<!-- Relationships (engste zuerst) -->
-		<section>
+		<section style="--i:4">
 			<div class="flex items-center gap-2">
 				<b class="text-[13px]">Beziehungen</b> <span class="text-[11px] text-mut">(engste zuerst)</span>
 				<span class="flex-1"></span>
@@ -320,7 +323,7 @@
 			</div>
 			<div class="mt-2 flex flex-col gap-2">
 				{#each data.relationships as r (r.connectionId)}
-					<a href={`/pair/${data.person.id}-${r.other.id}`} class="flex items-center gap-2.5 rounded-lg border border-line bg-card p-2 hover:bg-bg">
+					<a href={`/pair/${data.person.id}-${r.other.id}`} class="lift flex items-center gap-2.5 rounded-xl border border-line bg-card p-2 hover:bg-bg">
 						<Avatar person={{ name: r.other.name, profileImageUrl: r.other.image }} size={26} />
 						<span class="min-w-0 flex-1">
 							<b class="block truncate text-[13px]">{r.other.name}</b>
