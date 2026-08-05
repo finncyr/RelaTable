@@ -18,6 +18,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 			aliases: person.aliases.map((entry) => entry.alias).join('\n'),
 			dateOfBirth: person.dateOfBirth ? person.dateOfBirth.toISOString().slice(0, 10) : '',
 			gender: person.gender ?? '',
+			orientation: person.orientation,
 			city: person.location?.city ?? '',
 			notes: person.notes ?? '',
 			profileImageUrl: person.profileImageUrl ?? '',

@@ -310,6 +310,7 @@ export async function mergePersons(client: PrismaClient, ownerId: number, target
 			data: {
 				dateOfBirth: target.dateOfBirth ?? source.dateOfBirth,
 				gender: target.gender ?? source.gender,
+				orientation: target.orientation !== 'unbekannt' ? target.orientation : source.orientation,
 				locationId: target.locationId ?? source.locationId,
 				profileImagePath: target.profileImagePath ?? source.profileImagePath,
 				profileImageUrl: target.profileImageUrl ?? source.profileImageUrl,

@@ -35,7 +35,9 @@
 		<Avatar person={{ name: data.person.name, profileImageUrl: data.person.image }} size={64} />
 		<div>
 			<b class="text-lg">{data.person.name}</b>
-			<div class="text-xs text-mut">{subtitle || '—'}{data.person.gender ? ` · ${data.person.gender}` : ''}</div>
+			<div class="text-xs text-mut">
+				{subtitle || '—'}{data.person.gender ? ` · ${data.person.gender}` : ''}{data.person.orientation !== 'unbekannt' ? ` · ${data.person.orientation}` : ''}
+			</div>
 			{#if data.person.aliases.length}
 				<div class="mt-1 flex flex-wrap gap-1">
 					{#each data.person.aliases as alias}

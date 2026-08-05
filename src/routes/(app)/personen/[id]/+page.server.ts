@@ -81,6 +81,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 			name: person.name,
 			aliases: person.aliases.map((entry) => entry.alias),
 			gender: person.gender,
+			orientation: person.orientation,
 			city: person.location?.city ?? null,
 			dateOfBirth: person.dateOfBirth ? person.dateOfBirth.toISOString() : null,
 			image: person.profileImagePath ? `/uploads/${person.profileImagePath}` : person.profileImageUrl,
