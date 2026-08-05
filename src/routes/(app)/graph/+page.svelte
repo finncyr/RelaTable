@@ -24,6 +24,38 @@
 		hideIsolated = !hideIsolated;
 		localStorage.setItem('graph.hideIsolated', hideIsolated ? '1' : '0');
 	}
+	// Force-Layout: Abstoßung zwischen Personen + Verbindungslänge, einstellbar
+	// damit sich Profilbilder bei vielen Beziehungen nicht gegenseitig verdecken.
+	const DEFAULT_CHARGE = -30;
+	const DEFAULT_LINK_DISTANCE = 30;
+	let chargeStrength = $state(
+		browser ? Number(localStorage.getItem('graph.chargeStrength') ?? DEFAULT_CHARGE) : DEFAULT_CHARGE
+	);
+	let linkDistance = $state(
+		browser ? Number(localStorage.getItem('graph.linkDistance') ?? DEFAULT_LINK_DISTANCE) : DEFAULT_LINK_DISTANCE
+	);
+	let forceSettingsOpen = $state(false);
+	function applyForceSettings() {
+		if (!fgInstance) return;
+		fgInstance.d3Force('charge')?.strength(chargeStrength);
+		fgInstance.d3Force('link')?.distance(linkDistance);
+		fgInstance.d3ReheatSimulation();
+	}
+	function onChargeInput() {
+		localStorage.setItem('graph.chargeStrength', String(chargeStrength));
+		applyForceSettings();
+	}
+	function onLinkDistanceInput() {
+		localStorage.setItem('graph.linkDistance', String(linkDistance));
+		applyForceSettings();
+	}
+	function resetForceSettings() {
+		chargeStrength = DEFAULT_CHARGE;
+		linkDistance = DEFAULT_LINK_DISTANCE;
+		localStorage.setItem('graph.chargeStrength', String(DEFAULT_CHARGE));
+		localStorage.setItem('graph.linkDistance', String(DEFAULT_LINK_DISTANCE));
+		applyForceSettings();
+	}
 	const basePos = new Map<string, { x: number; y: number }>(); // layout positions, restored before each focus
 	let layoutName = $state('circle');
 	let panel = $state<null | { id: number; name: string; city: string | null; degree: number; x: number; y: number }>(null);
@@ -509,6 +541,7 @@
 				panel = null;
 			})
 			.onBackgroundClick(() => { panel = null; menu = null; mergeDialog = null; });
+		applyForceSettings();
 		graphReady = true;
 		graphSig = graphSignature();
 	}
@@ -707,7 +740,7 @@
 
 <svelte:head><title>Graph – RelaTable</title></svelte:head>
 
-<div class="graph-scene flex min-h-0 flex-1 flex-col overflow-hidden">
+<div class="graph-scene relative flex min-h-0 flex-1 flex-col overflow-hidden">
 	{#if focusId && focusName}
 		<Topbar title={`Fokus: ${focusName}`}>
 			<button class="btn btn-sm" onclick={clearFocus}>‹ Zurück</button>
@@ -740,8 +773,50 @@
 					onclick={toggleHideIsolated}
 					title="Personen ohne jede Beziehung ausblenden"
 				>Isolierte ausblenden</button>
+				{#if engine === 'forcegraph'}
+					<button
+						class="rounded border border-line px-2 py-1 text-xs transition-colors {forceSettingsOpen ? 'bg-accent/20 text-ink' : 'text-mut hover:text-ink'}"
+						onclick={() => (forceSettingsOpen = !forceSettingsOpen)}
+						title="Kraft-Einstellungen (Abstand der Personen)"
+					>⚙ Kräfte</button>
+				{/if}
 			</div>
 		</Topbar>
+	{/if}
+
+	{#if engine === 'forcegraph' && forceSettingsOpen}
+		<div
+			class="absolute right-2.5 top-14 z-30 w-64 rounded-lg border border-line bg-card p-3 text-xs shadow-lg backdrop-blur-md"
+			transition:fly={{ y: -10, duration: 150 }}
+		>
+			<div class="mb-2 flex items-center justify-between">
+				<b>Kraft-Einstellungen</b>
+				<button class="text-mut hover:text-ink" onclick={() => (forceSettingsOpen = false)} aria-label="Schließen">✕</button>
+			</div>
+			<label class="flex flex-col gap-1">
+				<span class="text-mut">Abstoßung (Abstand zwischen Personen)</span>
+				<input
+					type="range"
+					min="-400"
+					max="-5"
+					step="5"
+					bind:value={chargeStrength}
+					oninput={onChargeInput}
+				/>
+			</label>
+			<label class="mt-2.5 flex flex-col gap-1">
+				<span class="text-mut">Verbindungslänge</span>
+				<input
+					type="range"
+					min="10"
+					max="250"
+					step="5"
+					bind:value={linkDistance}
+					oninput={onLinkDistanceInput}
+				/>
+			</label>
+			<button class="btn btn-sm mt-3 w-full" onclick={resetForceSettings}>Zurücksetzen</button>
+		</div>
 	{/if}
 
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
