@@ -1,7 +1,7 @@
 import { error, fail, redirect } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { loadRelTypes, toPeriods } from '$lib/server/queries';
-import { currentTypeName, colorForType, closenessSortKey } from '$lib/domain/relationships';
+import { currentTypeName, colorForTypeName, closenessSortKey } from '$lib/domain/relationships';
 import { formatImprecise } from '$lib/domain/time';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -62,7 +62,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 					image: other.profileImagePath ? `/uploads/${other.profileImagePath}` : other.profileImageUrl
 				},
 				typeName,
-				color: colorForType(typeName),
+				color: colorForTypeName(typeName, types),
 				sortKey: closenessSortKey(periods, types)
 			};
 		})
@@ -91,6 +91,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 			name: person.name,
 			aliases: person.aliases.map((entry) => entry.alias),
 			gender: person.gender,
+			orientation: person.orientation,
 			city: person.location?.city ?? null,
 			dateOfBirth: person.dateOfBirth ? person.dateOfBirth.toISOString() : null,
 			image: person.profileImagePath ? `/uploads/${person.profileImagePath}` : person.profileImageUrl,
@@ -240,5 +241,18 @@ export const actions: Actions = {
 		const noteId = Number(data.get('noteId'));
 		await db.personNote.deleteMany({ where: { id: noteId, personId: id } });
 		return { noteDeleted: true };
+	},
+
+	deleteConnection: async ({ locals, params, request }) => {
+		const ownerId = locals.user!.id;
+		const id = Number(params.id);
+		await getOwnedPerson(ownerId, id);
+		const data = await request.formData();
+		const connectionId = Number(data.get('connectionId'));
+		// FK cascades remove periods, journal and change-log entries via the schema.
+		await db.connection.deleteMany({
+			where: { id: connectionId, ownerId, OR: [{ personLowId: id }, { personHighId: id }] }
+		});
+		return { connectionDeleted: true };
 	}
 };

@@ -14,6 +14,7 @@ export const actions: Actions = {
 				name: result.data!.name,
 				dateOfBirth: result.data!.dateOfBirth,
 				gender: result.data!.gender,
+				orientation: result.data!.orientation,
 				locationId: result.data!.locationId,
 				notes: result.data!.notes,
 				isCosplayer: result.data!.isCosplayer,

@@ -9,7 +9,10 @@
 
 	let theme = $state<Theme>(data.theme as Theme);
 	let hideSensitive = $state(data.hideSensitive);
-	let addingType = $state(false);
+	let addingTypeFor = $state<number | null>(null);
+	let editingTypeId = $state<number | null>(null);
+	let addingCategory = $state(false);
+	let editingCategoryId = $state<number | null>(null);
 	let addingEvent = $state(false);
 	let importJsonText = $state('');
 	let importMode = $state<'preview' | 'apply'>('preview');
@@ -85,93 +88,98 @@
 
 <Topbar title="Einstellungen" />
 
-<div class="flex-1 scroll-smooth overflow-auto">
-	<div class="mx-auto max-w-6xl p-4 sm:p-6">
-		<div class="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-7 lg:grid-cols-[11rem_minmax(0,1fr)] lg:gap-10">
-			<aside class="min-w-0">
-				<nav class="settings-nav flex max-w-full gap-1 overflow-x-auto pb-2 lg:sticky lg:top-4 lg:flex-col lg:overflow-visible" aria-label="Einstellungsbereiche">
-					{#each [
-						['#allgemein', 'Allgemein'],
-						['#typen', 'Typen & Regeln'],
-						['#datenschutz', 'Datenschutz'],
-						['#importe', 'Importe'],
-						['#ki', 'KI & Sprache'],
-						['#backup', 'Backup']
-					] as item}
-						<a class="flex min-h-10 flex-none items-center rounded-lg px-3 text-sm text-mut transition-colors hover:bg-card hover:text-ink" href={item[0]}>{item[1]}</a>
-					{/each}
-				</nav>
-			</aside>
-
-			<main class="min-w-0 max-w-3xl space-y-12">
-				<section id="allgemein" class="scroll-mt-4">
-					<div class="mb-4 flex items-end justify-between gap-3">
-						<div><h2 class="text-lg font-semibold">Allgemein</h2><p class="mt-1 text-sm text-mut">Darstellung und Verhalten der App.</p></div>
-						<span class="chip">{theme === 'System' ? 'Systemdesign' : theme === 'Light' ? 'Hell' : 'Dunkel'}</span>
-					</div>
-					<div class="card p-4">
-						<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-							<div><b class="text-sm">Erscheinungsbild</b><p class="mt-0.5 text-xs text-mut">„System“ folgt automatisch der Einstellung deines Geräts.</p></div>
-							<div class="flex min-w-64 overflow-hidden rounded-lg border border-line text-xs">
-								{#each ['System', 'Light', 'Dark'] as t}
-									<button class="min-h-10 flex-1 border-r border-line px-3 transition-colors last:border-r-0 {theme === t ? 'bg-accent/10 font-semibold text-accent' : 'hover:bg-bg'}" onclick={(e) => chooseTheme(t as Theme, e)}>
-										{t === 'System' ? 'System' : t === 'Light' ? 'Hell' : 'Dunkel'}
-									</button>
-								{/each}
+<div class="flex-1 overflow-auto p-3.5">
+	<div class="mx-auto flex max-w-4xl flex-col gap-5">
+		<!-- Relationship types + exclusion rules (SCR-081) -->
+		<section class="flex flex-wrap gap-4">
+			<div class="min-w-[300px] flex-1">
+				<b class="text-[13px]">Kategorien &amp; Typen</b>
+				<div class="card mt-1.5 p-3 text-[13px]">
+					{#each data.byCategory as cat}
+						<div class="mb-2">
+							<div class="text-mut">{cat.name}</div>
+							<div>
+								{#each cat.types as t, i}{i > 0 ? ' · ' : ''}<span class={t.isActive ? '' : 'text-mut line-through'}>{t.name}</span>{/each}
 							</div>
+							{#if addingTypeFor === cat.id}
+								<form
+									method="POST"
+									action="?/addType"
+									use:enhance={() => async ({ update }) => { await update(); addingTypeFor = null; }}
+									class="mt-1.5 flex items-center gap-1.5"
+								>
+									<input type="hidden" name="categoryId" value={cat.id} />
+									<input type="color" name="color" value="#7a8a99" class="h-6 w-8 shrink-0 cursor-pointer rounded border border-line bg-transparent p-0" />
+									<input name="name" class="inp inp-sm flex-1" placeholder="Neuer Typ" required />
+									<button class="btn btn-sm btn-primary">+</button>
+									<button type="button" class="btn btn-sm" onclick={() => (addingTypeFor = null)}>✕</button>
+								</form>
+								{#if form?.typeError && addingTypeFor === cat.id}<p class="mt-1 text-[11px] text-warn">{form.typeError}</p>{/if}
+							{:else}
+								<button class="btn btn-sm mt-1.5" onclick={() => (addingTypeFor = cat.id)}>+ Typ</button>
+							{/if}
 						</div>
-					</div>
-				</section>
+					{/each}
+					{#if addingType}
+						<form method="POST" action="?/addContextType" use:enhance={() => async ({ update }) => { await update(); addingType = false; }} class="mt-2 flex gap-2">
+							<input name="name" class="inp" placeholder="Neuer Kontext-Typ" required />
+							<button class="btn btn-sm btn-primary">Anlegen</button>
+						</form>
+						{#if form?.typeError}<p class="mt-1 text-[11px] text-warn">{form.typeError}</p>{/if}
+					{:else}
+						<button class="btn btn-sm mt-1" onclick={() => (addingType = true)}>+ Kontext-Typ</button>
+					{/if}
+				</div>
+			</div>
+			<div class="min-w-[300px] flex-1">
+				<b class="text-[13px]">Ausschlussregeln</b>
+				<div class="card mt-1.5 p-3 text-[13px] leading-7">
+					{#each data.ruleText as r}<div>• {r}</div>{/each}
+					<div class="mt-1 text-mut">• „Sex" ist ein Ereignis und ändert den Status nicht.</div>
+					<p class="mt-2 text-[11px] text-mut">Typ in Nutzung wird deaktiviert statt gelöscht; Historie bleibt gültig (AC-120).</p>
+				</div>
+			</div>
+		</section>
 
-				<section id="typen" class="scroll-mt-4">
-					<div class="mb-4 flex items-end justify-between gap-3">
-						<div><h2 class="text-lg font-semibold">Typen &amp; Regeln</h2><p class="mt-1 text-sm text-mut">Begriffe, die Graph und Ereignisse strukturieren.</p></div>
-						<span class="chip">{data.byCategory.length} Kategorien</span>
-					</div>
-					<div class="grid gap-4 xl:grid-cols-2">
-						<article class="card p-4">
-							<h3 class="text-sm font-semibold">Beziehungstypen</h3>
-							<div class="mt-3 space-y-3 text-sm">
-								{#each data.byCategory as cat}
-									<div><div class="text-xs font-medium text-mut">{cat.name}</div><div class="mt-1 leading-6">{#each cat.types as t, i}{i > 0 ? ' · ' : ''}<span class={t.isActive ? '' : 'text-mut line-through'}>{t.name}</span>{/each}</div></div>
-								{/each}
-							</div>
-							{#if addingType}
-								<form method="POST" action="?/addContextType" use:enhance={() => async ({ update }) => { await update(); addingType = false; }} class="mt-4 flex flex-col gap-2 sm:flex-row">
-									<input name="name" class="inp" placeholder="Neuer Kontext-Typ" required />
-									<div class="flex gap-2"><button type="button" class="btn btn-sm" onclick={() => (addingType = false)}>Abbrechen</button><button class="btn btn-sm btn-primary">Anlegen</button></div>
-								</form>
-								{#if form?.typeError}<p class="mt-2 text-xs text-warn">{form.typeError}</p>{/if}
-							{:else}
-								<button class="btn btn-sm mt-4" onclick={() => (addingType = true)}>+ Kontext-Typ</button>
-							{/if}
-						</article>
+		<!-- Event types, theme, sensitive, backup (SCR-082) -->
+		<section class="flex flex-wrap gap-4">
+			<div class="min-w-[260px] flex-1">
+				<b class="text-[13px]">Ereignistypen</b>
+				<div class="card mt-1.5 p-3 text-[13px]">
+					{#each data.eventTypes as et (et.id)}
+						<div class="flex items-center justify-between py-0.5">
+							<span class={et.sensitivity === 'sensitive' ? 'text-warn' : ''}>{et.name}{#if et.sensitivity === 'sensitive'}<span class="text-mut"> (sensibel)</span>{/if}</span>
+							<form method="POST" action="?/toggleEventSensitivity" use:enhance>
+								<input type="hidden" name="id" value={et.id} />
+								<button class="text-[11px] text-mut underline">{et.sensitivity === 'sensitive' ? 'normal' : 'sensibel'}</button>
+							</form>
+						</div>
+					{/each}
+					{#if addingEvent}
+						<form method="POST" action="?/addEventType" use:enhance={() => async ({ update }) => { await update(); addingEvent = false; }} class="mt-2">
+							<input name="name" class="inp" placeholder="Neuer Ereignistyp" required />
+							<label class="mt-1 flex items-center gap-2 text-[11px]"><input type="checkbox" name="sensitive" /> als sensibel markieren</label>
+							<div class="mt-1 flex justify-end gap-2"><button type="button" class="btn btn-sm" onclick={() => (addingEvent = false)}>Abbrechen</button><button class="btn btn-sm btn-primary">Anlegen</button></div>
+						</form>
+						{#if form?.eventError}<p class="mt-1 text-[11px] text-warn">{form.eventError}</p>{/if}
+					{:else}
+						<button class="btn btn-sm mt-1.5" onclick={() => (addingEvent = true)}>+ Ereignistyp</button>
+					{/if}
+				</div>
+			</div>
 
-						<article class="card p-4">
-							<h3 class="text-sm font-semibold">Ereignistypen</h3>
-							<div class="mt-2 divide-y divide-line text-sm">
-								{#each data.eventTypes as et (et.id)}
-									<div class="flex min-h-11 items-center justify-between gap-3 py-1.5">
-										<span class={et.sensitivity === 'sensitive' ? 'text-warn' : ''}>{et.name}{#if et.sensitivity === 'sensitive'}<span class="text-xs text-mut"> · sensibel</span>{/if}</span>
-										<form method="POST" action="?/toggleEventSensitivity" use:enhance>
-											<input type="hidden" name="id" value={et.id} />
-											<button class="btn btn-sm">{et.sensitivity === 'sensitive' ? 'Als normal markieren' : 'Als sensibel markieren'}</button>
-										</form>
-									</div>
-								{/each}
-							</div>
-							{#if addingEvent}
-								<form method="POST" action="?/addEventType" use:enhance={() => async ({ update }) => { await update(); addingEvent = false; }} class="mt-4 space-y-2">
-									<input name="name" class="inp" placeholder="Neuer Ereignistyp" required />
-									<label class="flex min-h-11 items-center gap-2 text-xs"><input type="checkbox" name="sensitive" /> Als sensibel markieren</label>
-									<div class="flex justify-end gap-2"><button type="button" class="btn btn-sm" onclick={() => (addingEvent = false)}>Abbrechen</button><button class="btn btn-sm btn-primary">Anlegen</button></div>
-								</form>
-								{#if form?.eventError}<p class="mt-2 text-xs text-warn">{form.eventError}</p>{/if}
-							{:else}
-								<button class="btn btn-sm mt-4" onclick={() => (addingEvent = true)}>+ Ereignistyp</button>
-							{/if}
-						</article>
+			<div class="min-w-[240px] flex-1">
+				<b class="text-[13px]">Theme</b>
+				<div class="card mt-1.5 p-3">
+					<div class="flex overflow-hidden rounded-md border border-line text-xs">
+						{#each ['System', 'Light', 'Dark'] as t}
+							<button class="flex-1 border-r border-line py-1.5 last:border-r-0 {theme === t ? 'bg-line/60 font-semibold' : ''}" onclick={() => chooseTheme(t as Theme)}>
+								{t === 'System' ? 'System' : t === 'Light' ? 'Hell' : 'Dunkel'}
+							</button>
+						{/each}
 					</div>
+					<p class="mt-1.5 text-[11px] text-mut">folgt System bis manuell gewählt (DEC-015)</p>
+				</div>
 
 					<details class="card group mt-4">
 						<summary class="flex min-h-12 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium"><span>Ausschlussregeln anzeigen</span><span class="text-mut transition-transform group-open:rotate-180">⌄</span></summary>

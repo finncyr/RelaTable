@@ -66,6 +66,8 @@ model Person {
   dateOfBirth     DateTime?
   // Maennlich|Weiblich|divers (DEC-021)
   gender          String?
+  // Straight|Bi/Pan|Gay|unbekannt
+  orientation     String    @default("unbekannt")
   notes           String?
   profileImagePath String?
   profileImageUrl String?

@@ -2,6 +2,7 @@ import { db } from './db';
 import {
 	currentTypeName,
 	colorForType,
+	colorForTypeName,
 	closenessSortKey,
 	canonicalPair,
 	type RelType,
@@ -62,7 +63,7 @@ export async function loadGraph(ownerId: number): Promise<{ nodes: GraphNode[]; 
 			source: c.personLowId,
 			target: c.personHighId,
 			typeName,
-			color: colorForType(typeName)
+			color: colorForTypeName(typeName, types)
 		};
 	});
 
@@ -100,4 +101,4 @@ export async function findConnection(ownerId: number, a: number, b: number) {
 	});
 }
 
-export { currentTypeName, colorForType, closenessSortKey, toPeriods };
+export { currentTypeName, colorForType, colorForTypeName, closenessSortKey, toPeriods };

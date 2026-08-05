@@ -29,3 +29,6 @@ nimbalyst-local/
 
 # Python bytecode (Instagram-Import-Skripte)
 __pycache__/
+
+# Prod Env
+docker-compose.yml

@@ -27,7 +27,6 @@
 	let engine = $state<'cytoscape' | 'forcegraph'>(
 		browser ? ((localStorage.getItem('graph.engine') as 'forcegraph' | null) ?? 'forcegraph') : 'forcegraph'
 	);
-	let searchAutoSwitched = false;
 	const basePos = new Map<string, { x: number; y: number }>(); // layout positions, restored before each focus
 	let layoutName = $state('circle');
 	let panel = $state<null | { id: number; name: string; city: string | null; degree: number; x: number; y: number }>(null);
@@ -522,7 +521,7 @@
 	}
 
 	function buildElements() {
-		const nodes = data.graph.nodes.map((n) => ({
+		const nodes = visibleNodes().map((n) => ({
 			data: { id: String(n.id), name: n.name, aliases: n.aliases, image: n.image, degree: n.degree, isolated: n.degree === 0 }
 		}));
 		const edges = data.graph.edges.map((e) => ({
@@ -809,7 +808,7 @@
 		return (
 			data.graph.nodes.map((n) => `${n.id}:${n.name}:${n.aliases.join('|')}:${n.image}:${n.degree}`).join(',') +
 			'|' +
-			data.graph.edges.map((e) => `${e.source}-${e.target}-${e.color}-${e.typeName}`).join(',')
+			data.graph.edges.map((e) => `${e.source}-${e.target}-${e.color}`).join(',')
 		);
 	}
 
@@ -892,7 +891,7 @@
 	function buildFgData() {
 		return {
 			nodes: data.graph.nodes.map((n) => ({ id: n.id, name: n.name, val: Math.max(1, n.degree), img: n.image })),
-			links: data.graph.edges.map((e) => ({ source: e.source, target: e.target, color: e.color, typeName: e.typeName }))
+			links: data.graph.edges.map((e) => ({ source: e.source, target: e.target, color: e.color }))
 		};
 	}
 
@@ -1004,23 +1003,7 @@
 				menu = { id: node.id, name: meta.name, x: event.offsetX, y: event.offsetY };
 				panel = null;
 			})
-			.onNodeHover((node: any) => {
-				fgMut.hoverId = node?.id ?? null;
-				container.style.cursor = node ? 'pointer' : '';
-			})
-			.onLinkClick((link: any) => {
-				const src = typeof link.source === 'object' ? link.source.id : link.source;
-				const tgt = typeof link.target === 'object' ? link.target.id : link.target;
-				goto(`/pair/${src}-${tgt}`);
-			})
-			.onLinkRightClick((link: any, event: MouseEvent) => {
-				event.preventDefault();
-				const src = typeof link.source === 'object' ? link.source.id : link.source;
-				const tgt = typeof link.target === 'object' ? link.target.id : link.target;
-				edgeMenu = { source: Number(src), target: Number(tgt), typeName: link.typeName ?? null, x: event.offsetX, y: event.offsetY };
-				menu = null; panel = null;
-			})
-			.onBackgroundClick(() => { panel = null; menu = null; edgeMenu = null; mergeDialog = null; });
+			.onBackgroundClick(() => { panel = null; menu = null; mergeDialog = null; });
 		graphReady = true;
 		graphSig = graphSignature();
 		applyRelationshipFilter();
@@ -1470,7 +1453,7 @@
 
 <svelte:head><title>Graph – RelaTable</title></svelte:head>
 
-<div class="graph-scene flex min-h-0 flex-1 flex-col overflow-hidden">
+<div class="graph-scene relative flex min-h-0 flex-1 flex-col overflow-hidden">
 	{#if focusId && focusName}
 		<Topbar title={`Fokus: ${focusName}`}>
 			<button class="btn btn-sm min-w-11 sm:min-w-0" onclick={openSearch} title="Person suchen (Strg+F)" aria-label="Person suchen"><Icon name="search" size={16} /><span class="hidden sm:inline">Suchen</span></button>
@@ -1478,8 +1461,64 @@
 		</Topbar>
 	{:else}
 		<Topbar title="Graph" subtitle={`${data.graph.nodes.length} Personen`}>
-			<button class="btn btn-sm min-w-11 sm:min-w-0" onclick={openSearch} title="Person suchen (Strg+F)" aria-label="Person suchen"><Icon name="search" size={16} /><span class="hidden sm:inline">Person suchen</span></button>
+			<div class="flex items-center gap-3">
+				{#if engine === 'cytoscape'}
+					<label class="flex items-center gap-1 text-xs text-mut">
+						Layout
+						<select class="inp btn-sm w-auto" bind:value={layoutName}>
+							<option value="circle">Kreis</option>
+							<option value="concentric">Konzentrisch</option>
+							<option value="grid">Raster</option>
+						</select>
+					</label>
+				{/if}
+				<div class="flex overflow-hidden rounded border border-line text-xs">
+					<button
+						class="px-2 py-1 transition-colors {engine === 'cytoscape' ? 'bg-accent/20 text-ink' : 'text-mut hover:text-ink'}"
+						onclick={() => setEngine('cytoscape')}
+					>Cyto</button>
+					<button
+						class="border-l border-line px-2 py-1 transition-colors {engine === 'forcegraph' ? 'bg-accent/20 text-ink' : 'text-mut hover:text-ink'}"
+						onclick={() => setEngine('forcegraph')}
+					>Force</button>
+				</div>
+			</div>
 		</Topbar>
+	{/if}
+
+	{#if engine === 'forcegraph' && forceSettingsOpen}
+		<div
+			class="absolute right-2.5 top-14 z-30 w-64 rounded-lg border border-line bg-card p-3 text-xs shadow-lg backdrop-blur-md"
+			transition:fly={{ y: -10, duration: 150 }}
+		>
+			<div class="mb-2 flex items-center justify-between">
+				<b>Kraft-Einstellungen</b>
+				<button class="text-mut hover:text-ink" onclick={() => (forceSettingsOpen = false)} aria-label="Schließen">✕</button>
+			</div>
+			<label class="flex flex-col gap-1">
+				<span class="text-mut">Abstoßung (Abstand zwischen Personen)</span>
+				<input
+					type="range"
+					min="-400"
+					max="-5"
+					step="5"
+					bind:value={chargeStrength}
+					oninput={onChargeInput}
+				/>
+			</label>
+			<label class="mt-2.5 flex flex-col gap-1">
+				<span class="text-mut">Verbindungslänge</span>
+				<input
+					type="range"
+					min="10"
+					max="250"
+					step="5"
+					bind:value={linkDistance}
+					oninput={onLinkDistanceInput}
+				/>
+			</label>
+			<button class="btn btn-sm mt-3 w-full" onclick={resetForceSettings}>Zurücksetzen</button>
+		</div>
 	{/if}
 
 	<!-- svelte-ignore a11y_no_static_element_interactions -->

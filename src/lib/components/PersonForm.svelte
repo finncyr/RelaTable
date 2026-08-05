@@ -9,6 +9,7 @@
 		aliases?: string;
 		dateOfBirth?: string; // yyyy-mm-dd
 		gender?: string;
+		orientation?: string;
 		city?: string;
 		notes?: string;
 		isCosplayer?: boolean;
@@ -28,6 +29,7 @@
 	let aliases = $state(initial.aliases ?? '');
 	let dateOfBirth = $state(initial.dateOfBirth ?? '');
 	let gender = $state(initial.gender ?? '');
+	let orientation = $state(initial.orientation ?? 'unbekannt');
 	let city = $state(initial.city ?? '');
 	let notes = $state(initial.notes ?? '');
 	let isCosplayer = $state(initial.isCosplayer ?? false);
@@ -117,6 +119,16 @@
 						<option value="divers">divers</option>
 					</select>
 				</div>
+			</div>
+
+			<div class="mt-2.5">
+				<label class="label" for="orientation">LGBTQ+-Status</label>
+				<select id="orientation" name="orientation" class="inp mt-1" bind:value={orientation}>
+					<option value="unbekannt">unbekannt</option>
+					<option value="Straight">Straight</option>
+					<option value="Bi/Pan">Bi/Pan</option>
+					<option value="Gay">Gay</option>
+				</select>
 			</div>
 
 			<div class="mt-2.5">

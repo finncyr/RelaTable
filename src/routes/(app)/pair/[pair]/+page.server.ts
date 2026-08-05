@@ -1,7 +1,7 @@
 import { error, fail, redirect } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { loadRelTypes, toPeriods } from '$lib/server/queries';
-import { canonicalPair, currentTypeName, colorForType } from '$lib/domain/relationships';
+import { canonicalPair, currentTypeName, colorForTypeName } from '$lib/domain/relationships';
 import { formatImprecise, sortableInstant, type TimeKind } from '$lib/domain/time';
 import { parseImprecise } from '$lib/server/impreciseTime';
 import { startType, startFamilyType, endRomance, endPeriod, addJournal, getOrCreateConnection, deleteConnection, clearHistory } from '$lib/server/relationshipService';
@@ -78,7 +78,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 
 	// Current dominant type + color.
 	const current = currentTypeName(toPeriods(connection.periods), types);
-	const color = colorForType(current);
+	const color = colorForTypeName(current, types);
 
 	// History: periods chronological (newest first), with imprecise times rendered.
 	const nameForPerson = (id: number | null) =>

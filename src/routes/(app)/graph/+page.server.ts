@@ -1,34 +1,23 @@
 import { fail, redirect } from '@sveltejs/kit';
-import { loadGraph, loadRelTypes, findConnection } from '$lib/server/queries';
+import { loadGraph } from '$lib/server/queries';
 import { mergePersons } from '$lib/server/persons';
 import { startType, startFamilyType, getOrCreateConnection, deleteConnection, endPeriod, endFamilyType } from '$lib/server/relationshipService';
 import { db } from '$lib/server/db';
-import { findOrCreateLocation } from '$lib/server/geo';
-import { processPersonForm } from '$lib/server/personForm';
 import { TYPE_COLORS } from '$lib/domain/relationships';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals, url }) => {
-	const [graph, relTypes] = await Promise.all([loadGraph(locals.user!.id), loadRelTypes()]);
+	const graph = await loadGraph(locals.user!.id);
 	const focus = url.searchParams.get('focus');
 	const focusId = focus && /^\d+$/.test(focus) ? Number(focus) : null;
 
-	// Legend entries (the four primary edge types shown in SCR-020, plus Familie/gold).
+	// Legend entries (the four primary edge types shown in SCR-020).
 	const legend = [
-		{ key: 'Bekanntschaft', label: 'Bekanntschaft', color: TYPE_COLORS['Bekanntschaft'] },
-		{ key: 'Freundschaft', label: 'Freundschaft', color: TYPE_COLORS['Freundschaft'] },
-		{ key: 'Enge Freundschaft', label: 'Enge Freundschaft', color: TYPE_COLORS['Enge Freundschaft'] },
-		{ key: 'Romantik', label: 'Romantik', color: TYPE_COLORS['Romantik'] },
-		{ key: 'Familie', label: 'Familie', color: TYPE_COLORS['Mutter'] },
-		{ key: 'Kontext', label: 'Kontext', color: '#7a8a99' }
+		{ label: 'Bekanntschaft', color: TYPE_COLORS['Bekanntschaft'] },
+		{ label: 'Freundschaft', color: TYPE_COLORS['Freundschaft'] },
+		{ label: 'Enge Freundschaft', color: TYPE_COLORS['Enge Freundschaft'] },
+		{ label: 'Romantik', color: TYPE_COLORS['Romantik'] }
 	];
-
-	const types = relTypes
-		.filter((t) => t.categoryName !== 'Familie')
-		.map((t) => ({ id: t.id, name: t.name, color: TYPE_COLORS[t.name] ?? t.color ?? '#7a8a99' }));
-	const familyTypes = relTypes
-		.filter((t) => t.categoryName === 'Familie')
-		.map((t) => ({ id: t.id, name: t.name, color: TYPE_COLORS[t.name] ?? t.color ?? '#c9a227' }));
 
 	return { graph, focusId, legend, types, familyTypes };
 };

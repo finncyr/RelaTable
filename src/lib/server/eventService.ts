@@ -1,6 +1,7 @@
 import { db } from './db';
 import { findOrCreateLocation } from './geo';
 import type { ParsedImprecise } from './impreciseTime';
+import { ensureAcquaintanceForParticipants } from './relationshipService';
 
 export interface EventInput {
 	name: string;
@@ -47,6 +48,8 @@ export async function createEvent(ownerId: number, input: EventInput): Promise<E
 			participants: { create: ids.map((personId) => ({ personId })) }
 		}
 	});
+	// AC-Event-Teilnahme: Teilnehmer erhalten automatisch mind. "Bekanntschaft" (best-effort).
+	if (ids.length >= 2) await ensureAcquaintanceForParticipants(ownerId, ids, input.time);
 	return { ok: true, eventId: event.id };
 }
 
@@ -74,6 +77,8 @@ export async function updateEvent(ownerId: number, eventId: number, input: Event
 			}
 		});
 	});
+	// AC-Event-Teilnahme: auch bei Bearbeitung für den finalen Teilnehmerkreis (best-effort).
+	if (ids.length >= 2) await ensureAcquaintanceForParticipants(ownerId, ids, input.time);
 	return { ok: true, eventId };
 }
 

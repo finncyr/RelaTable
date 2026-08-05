@@ -3,12 +3,14 @@ import { findOrCreateLocation } from './geo';
 import { saveProfileImage } from './uploads';
 
 const GENDERS = ['Männlich', 'Weiblich', 'divers'] as const;
+const ORIENTATIONS = ['Straight', 'Bi/Pan', 'Gay', 'unbekannt'] as const;
 
 const schema = z.object({
 	name: z.string().trim().min(1, 'Name ist Pflicht'),
 	aliases: z.string().trim().optional(),
 	dateOfBirth: z.string().trim().optional(),
 	gender: z.enum(GENDERS).optional().or(z.literal('')),
+	orientation: z.enum(ORIENTATIONS).optional().or(z.literal('')),
 	city: z.string().trim().optional(),
 	notes: z.string().trim().optional(),
 	isCosplayer: z.enum(['true', '']).optional(),
@@ -27,6 +29,7 @@ export interface PersonFormResult {
 		aliases: string[];
 		dateOfBirth: Date | null;
 		gender: string | null;
+		orientation: string;
 		locationId: number | null;
 		notes: string | null;
 		isCosplayer: boolean;
@@ -42,6 +45,7 @@ export async function processPersonForm(formData: FormData): Promise<PersonFormR
 		aliases: String(formData.get('aliases') ?? ''),
 		dateOfBirth: String(formData.get('dateOfBirth') ?? ''),
 		gender: String(formData.get('gender') ?? ''),
+		orientation: String(formData.get('orientation') ?? ''),
 		city: String(formData.get('city') ?? ''),
 		notes: String(formData.get('notes') ?? ''),
 		isCosplayer: String(formData.get('isCosplayer') ?? ''),
@@ -105,6 +109,7 @@ export async function processPersonForm(formData: FormData): Promise<PersonFormR
 			aliases,
 			dateOfBirth: dob,
 			gender: v.gender || null,
+			orientation: v.orientation || 'unbekannt',
 			locationId,
 			notes: v.notes || null,
 			isCosplayer: v.isCosplayer === 'true',

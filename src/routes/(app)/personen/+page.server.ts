@@ -1,7 +1,8 @@
+import { fail } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { loadRelTypes, toPeriods } from '$lib/server/queries';
 import { currentTypeName } from '$lib/domain/relationships';
-import type { PageServerLoad } from './$types';
+import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals, url }) => {
 	const ownerId = locals.user!.id;
@@ -69,4 +70,26 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const total = await db.person.count({ where: { ownerId } });
 
 	return { items, q, ort, typ, sort, cities, typeOptions, total };
+};
+
+export const actions: Actions = {
+	// Mehrere Personen in einem Schritt löschen (Mehrfachauswahl auf der Übersicht).
+	// FK-Cascades entfernen Verbindungen, Ereignis-Teilnahmen, Aliase etc. via Schema
+	// (siehe C-MODEL-12 / einzelne delete-Action auf der Personen-Detailseite).
+	bulkDelete: async ({ locals, request }) => {
+		const ownerId = locals.user!.id;
+		const data = await request.formData();
+		const ids = data
+			.getAll('ids')
+			.map((v) => Number(v))
+			.filter((n) => Number.isInteger(n));
+		if (!ids.length) return fail(400, { bulkError: 'Keine Personen ausgewählt.' });
+
+		const owned = await db.person.findMany({ where: { id: { in: ids }, ownerId }, select: { id: true } });
+		const ownedIds = owned.map((p) => p.id);
+		if (!ownedIds.length) return fail(400, { bulkError: 'Auswahl ungültig oder nicht mehr vorhanden.' });
+
+		await db.person.deleteMany({ where: { id: { in: ownedIds }, ownerId } });
+		return { bulkDeleted: ownedIds.length };
+	}
 };

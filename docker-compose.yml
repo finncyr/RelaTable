@@ -10,8 +10,14 @@ services:
     env_file:
       - .env
     environment:
-      ORIGIN: 'https://srv1672361.hstgr.cloud'
+      ORIGIN: 'https://relatable.quag.pro'
       PUBLIC_MAP_PROVIDER: 'leaflet'
+      # Pinned here (not just in .env) so a typo or a stale local-dev .env can
+      # never silently point Prisma/uploads at the wrong path again.
+      DATABASE_URL: 'file:/data/relatable.db'
+      DATA_DIR: '/data'
+    networks:
+      - caddy
     volumes:
       - relatable-data:/data
     security_opt:
@@ -27,12 +33,9 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.relatable.rule=Host(`srv1672361.hstgr.cloud`)
-      - traefik.http.routers.relatable.entrypoints=websecure
-      - traefik.http.routers.relatable.tls.certresolver=letsencrypt
-      - traefik.http.services.relatable.loadbalancer.server.port=3000
 
 volumes:
   relatable-data:
+networks:
+  caddy:
+    external: true

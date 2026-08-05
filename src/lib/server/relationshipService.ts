@@ -1,8 +1,10 @@
 import { db } from './db';
 import { loadRelTypes } from './queries';
 import {
+	activeCloseness,
 	canonicalPair,
 	evaluateStartType,
+	hasActiveRomance,
 	validateEndRomance,
 	inverseFamilyRoleName,
 	type Period
@@ -212,23 +214,6 @@ export async function endRomance(
 			await tx.relationshipChangeLog.create({ data: { connectionId, action: 'start', relationshipTypeId: exType.id, detail: 'Ex-Partner/in' } });
 		}
 	});
-	return { ok: true, connectionId };
-}
-
-/** Delete a connection outright (versehentlich angelegt) — no change log, no trace. */
-export async function deleteConnection(ownerId: number, connectionId: number): Promise<ServiceResult> {
-	if (!(await ownsConnection(ownerId, connectionId))) return { ok: false, error: 'E-NOT-FOUND' };
-	await db.connection.delete({ where: { id: connectionId } });
-	return { ok: true };
-}
-
-/** Wipe all relationship periods + change log for a connection (Verlauf falsch angelegt). Keeps journal/events. */
-export async function clearHistory(ownerId: number, connectionId: number): Promise<ServiceResult> {
-	if (!(await ownsConnection(ownerId, connectionId))) return { ok: false, error: 'E-NOT-FOUND' };
-	await db.$transaction([
-		db.relationshipChangeLog.deleteMany({ where: { connectionId } }),
-		db.connectionRelationshipPeriod.deleteMany({ where: { connectionId } })
-	]);
 	return { ok: true, connectionId };
 }
 

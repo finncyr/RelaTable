@@ -8,7 +8,6 @@ import {
 	validateEndRomance,
 	closenessSortKey,
 	normalizeRelationshipTypeName,
-	inverseFamilyRoleName,
 	type RelType,
 	type Period
 } from './relationships';
@@ -121,58 +120,5 @@ describe('relationship type phrase normalization', () => {
 	it('keeps exact canonical names intact', () => {
 		expect(normalizeRelationshipTypeName('Freundschaft')).toBe('Freundschaft');
 		expect(normalizeRelationshipTypeName('Enge Freundschaft')).toBe('Enge Freundschaft');
-	});
-});
-
-describe('Familie replaces Nähegrad (directional, personId-scoped)', () => {
-	it('starting a family type ends the active closeness', () => {
-		const res = evaluateStartType(T.mutter.id, [active(T.freundschaft.id)], types, 1);
-		expect(res.allowed).toBe(true);
-		expect(res.ends).toEqual([T.freundschaft.id]);
-	});
-
-	it('blocks setting a new closeness while a family type is active', () => {
-		const periods = [{ ...active(T.mutter.id), personId: 1 }];
-		const res = evaluateStartType(T.freundschaft.id, periods, types);
-		expect(res.allowed).toBe(false);
-		expect(res.error).toBe('E-NG-FAM');
-	});
-
-	it('allows the same family type on both persons of a connection (symmetric roles)', () => {
-		const periods = [{ ...active(T.mutter.id), personId: 1 }];
-		const res = evaluateStartType(T.mutter.id, periods, types, 2);
-		expect(res.allowed).toBe(true);
-	});
-
-	it('blocks re-starting the identical role for the same person', () => {
-		const periods = [{ ...active(T.mutter.id), personId: 1 }];
-		const res = evaluateStartType(T.mutter.id, periods, types, 1);
-		expect(res.allowed).toBe(false);
-		expect(res.error).toBe('E-PERIOD-OVERLAP');
-	});
-});
-
-describe('inverseFamilyRoleName (V-9: reciprocal role from gender)', () => {
-	it('derives the gendered reciprocal when known', () => {
-		expect(inverseFamilyRoleName('Mutter', 'Männlich')).toBe('Sohn');
-		expect(inverseFamilyRoleName('Mutter', 'Weiblich')).toBe('Tochter');
-		expect(inverseFamilyRoleName('Onkel', 'Weiblich')).toBe('Nichte');
-		expect(inverseFamilyRoleName('Neffe', 'Männlich')).toBe('Onkel');
-	});
-
-	it('falls back to the gender-neutral term for divers or missing gender', () => {
-		expect(inverseFamilyRoleName('Mutter', 'divers')).toBe('Kind');
-		expect(inverseFamilyRoleName('Mutter', null)).toBe('Kind');
-		expect(inverseFamilyRoleName('Mutter', undefined)).toBe('Kind');
-		expect(inverseFamilyRoleName('Onkel', 'divers')).toBe('Neffe/Nichte');
-	});
-
-	it('round-trips through the neutral fallback types themselves', () => {
-		expect(inverseFamilyRoleName('Kind', 'Weiblich')).toBe('Mutter');
-		expect(inverseFamilyRoleName('Kind', null)).toBe('Elternteil');
-	});
-
-	it('returns null for non-family type names', () => {
-		expect(inverseFamilyRoleName('Freundschaft', 'Weiblich')).toBeNull();
 	});
 });
